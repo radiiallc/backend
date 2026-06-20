@@ -18,6 +18,8 @@
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",
     "@prisma/client": "^6.19.3",
+    "prisma": "^6.19.3",
+    "tsx": "^4.21.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "csv-parse": "^5.6.0",
@@ -34,8 +36,6 @@
     "@types/node": "^22.10.2",
     "@types/ssh2-sftp-client": "^9.0.6",
     "dotenv-cli": "^11.0.0",
-    "prisma": "^6.19.3",
-    "tsx": "^4.21.0",
     "typescript": "^5.7.2"
   }
 }
