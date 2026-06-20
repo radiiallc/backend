@@ -1,0 +1,88 @@
+import { Router } from "express";
+
+import {
+  verifyCredentials,
+  requestPasswordReset,
+  resetPassword,
+  validateResetToken,
+  submitSignupRequest
+} from "../modules/auth/auth.service";
+import {
+  SESSION_COOKIE,
+  signSession,
+  sessionCookieOptions,
+  clearCookieOptions
+} from "../modules/auth/session";
+import { requireAuth } from "../middleware/auth";
+
+export const authRouter = Router();
+
+// POST /auth/login — credential check (APPROVED-gate), issue session cookie.
+authRouter.post("/login", async (req, res) => {
+  const email = String(req.body?.email ?? "");
+  const password = String(req.body?.password ?? "");
+  const user = await verifyCredentials(email, password);
+  if (!user) {
+    // Single generic message — never distinguish unknown email / bad password /
+    // unapproved status (mirrors the NextAuth authorize returning null).
+    res.status(401).json({ error: "Invalid email or password" });
+    return;
+  }
+  const token = await signSession(user);
+  res.cookie(SESSION_COOKIE, token, sessionCookieOptions());
+  res.json({ user });
+});
+
+// POST /auth/logout — clear the session cookie.
+authRouter.post("/logout", (_req, res) => {
+  res.clearCookie(SESSION_COOKIE, clearCookieOptions());
+  res.json({ ok: true });
+});
+
+// GET /auth/me — current session (used by both frontends in place of NextAuth session()).
+authRouter.get("/me", requireAuth, (req, res) => {
+  res.json({ user: req.user });
+});
+
+// POST /auth/signup — create pending account (+ confirmation/admin emails).
+authRouter.post("/signup", async (req, res) => {
+  const result = await submitSignupRequest(req.body ?? {});
+  if (!result.ok) {
+    res.status(400).json(result);
+    return;
+  }
+  res.json(result);
+});
+
+// POST /auth/password/forgot — leak-safe; always returns ok for a valid email shape.
+authRouter.post("/password/forgot", async (req, res) => {
+  const result = await requestPasswordReset(String(req.body?.email ?? ""));
+  if (!result.ok) {
+    res.status(400).json(result);
+    return;
+  }
+  res.json(result);
+});
+
+// POST /auth/password/reset — consume token + set new password.
+authRouter.post("/password/reset", async (req, res) => {
+  const result = await resetPassword({
+    tokenId: String(req.body?.tokenId ?? ""),
+    token: String(req.body?.token ?? ""),
+    newPassword: String(req.body?.newPassword ?? "")
+  });
+  if (!result.ok) {
+    res.status(400).json(result);
+    return;
+  }
+  res.json(result);
+});
+
+// GET /auth/password/validate?id=&token= — is a reset link still usable?
+authRouter.get("/password/validate", async (req, res) => {
+  const valid = await validateResetToken(
+    String(req.query.id ?? ""),
+    String(req.query.token ?? "")
+  );
+  res.json({ valid });
+});

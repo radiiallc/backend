@@ -1,0 +1,78 @@
+// Env validation for the standalone backend. Ported from the portal's
+// src/lib/env.ts (HR-3); the backend now owns the data + integration secrets.
+// Frontend-only vars (NEXT_PUBLIC_*) stay in the Next apps.
+
+function required(name: string): string {
+  const value = process.env[name];
+  if (value === undefined || value === "") {
+    throw new Error(`Environment variable ${name} is required but not set. Check .env.`);
+  }
+  return value;
+}
+
+function optional(name: string, fallback: string): string {
+  const value = process.env[name];
+  return value === undefined || value === "" ? fallback : value;
+}
+
+function numberOptional(name: string, fallback: number): number {
+  const value = process.env[name];
+  if (value === undefined || value === "") return fallback;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function resolveAppUrl(): string {
+  const explicit = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL;
+  if (explicit) return explicit.replace(/\/+$/, "");
+  const vercelProd = process.env.VERCEL_PROJECT_PRODUCTION_URL;
+  if (vercelProd) return `https://${vercelProd}`;
+  const vercel = process.env.VERCEL_URL;
+  if (vercel) return `https://${vercel}`;
+  return "http://localhost:3000";
+}
+
+export const env = {
+  port: numberOptional("PORT", 4000),
+  nodeEnv: optional("NODE_ENV", "development"),
+
+  // Public URL of the client portal — used in email links + the password-reset
+  // URL. publicAppUrl is the raw env (controls whether email logo is embedded).
+  appUrl: resolveAppUrl(),
+  publicAppUrl: optional("NEXT_PUBLIC_APP_URL", optional("APP_URL", "")),
+
+  databaseUrl: required("DATABASE_URL"),
+  authSecret: required("AUTH_SECRET"),
+  resendApiKey: required("RESEND_API_KEY"),
+  cronSecret: required("CRON_SECRET"),
+
+  notificationEmail: optional("RADIIA_NOTIFICATION_EMAIL", "production@radiia.co"),
+  ingestAlertThrottleHours: numberOptional("INGEST_ALERT_THROTTLE_HOURS", 6),
+  resendFromEmail: optional("RESEND_FROM_EMAIL", "RADIIA Portal <onboarding@resend.dev>"),
+
+  // Shared secret for the service-to-service /internal API surface (share page,
+  // Sherry feed, cert proxy). The portal sends it as `x-internal-secret`; empty
+  // => the /internal routes fail closed (401). Set the same value in both apps.
+  internalApiSecret: optional("INTERNAL_API_SECRET", ""),
+
+  // Cookie scope for the shared session (D8): httpOnly cookie on .radiia.co so
+  // apps/portal + apps/admin subdomains share it. Empty in dev (host-only cookie).
+  cookieDomain: optional("AUTH_COOKIE_DOMAIN", ""),
+
+  // CORS — comma-separated browser origins allowed to call the api with
+  // credentials (the portal + admin frontends). Defaults to the dev portal.
+  allowedOrigins: optional("ALLOWED_ORIGINS", "http://localhost:3000")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+
+  gemstoneFtpHost: optional("GEMSTONE_FTP_HOST", ""),
+  gemstoneFtpUser: optional("GEMSTONE_FTP_USER", ""),
+  gemstoneFtpPassword: optional("GEMSTONE_FTP_PASSWORD", ""),
+  gemstoneFtpPath: optional("GEMSTONE_FTP_PATH", ""),
+  ingestFtpDir: optional("INGEST_FTP_DIR", "/upload"),
+
+  sherryFeedToken: optional("SHERRY_FEED_TOKEN", ""),
+  sherryFeedNaturalMarkupPct: numberOptional("SHERRY_FEED_NATURAL_MARKUP_PCT", 5),
+  sherryFeedLabMarkupPct: numberOptional("SHERRY_FEED_LAB_MARKUP_PCT", 15)
+} as const;

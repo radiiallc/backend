@@ -1,0 +1,311 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Company {
+  id                      String    @id @default(cuid())
+  name                    String
+  contactEmail            String?
+  contactPhone            String?
+  website                 String?
+  shippingAddress         String?
+  internalNotes           String    @default("")
+  gemstoneMarkupPct       Decimal   @default(0) @db.Decimal(6, 2)
+  labDiamondMarkupPct     Decimal   @default(0) @db.Decimal(6, 2)
+  naturalDiamondMarkupPct Decimal   @default(0) @db.Decimal(6, 2)
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+  users                   User[]
+  requests                Request[]
+}
+
+enum UserStatus {
+  PENDING
+  APPROVED
+  DECLINED
+  DEACTIVATED
+}
+
+enum UserRole {
+  BUYER
+  ADMIN
+}
+
+model User {
+  id              String               @id @default(cuid())
+  email           String               @unique
+  passwordHash    String
+  fullName        String
+  phone           String?
+  location        String?
+  referredBy      String?
+  status          UserStatus           @default(PENDING)
+  role            UserRole             @default(BUYER)
+  approvedAt      DateTime?
+  companyId       String?
+  company         Company?             @relation(fields: [companyId], references: [id])
+  emailVerifiedAt DateTime?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  sessions        Session[]
+  resetTokens     PasswordResetToken[]
+  requests        Request[]
+  cart            Cart?
+  favorites       Favorite[]
+
+  @@index([companyId])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model Gemstone {
+  id                String   @id @default(cuid())
+  feedRowId         String   @unique
+  feedRowIndex      Int?
+  sku               String
+  varietyRaw        String?
+  shapeRaw          String?
+  colorRaw          String?
+  weightCt          Decimal? @db.Decimal(10, 3)
+  lengthMm          Decimal? @db.Decimal(10, 3)
+  widthMm           Decimal? @db.Decimal(10, 3)
+  depthMm           Decimal? @db.Decimal(10, 3)
+  ratio             Decimal? @db.Decimal(10, 4)
+  basePriceUsd      Decimal? @db.Decimal(12, 2)
+  basePricePerCtUsd Decimal? @db.Decimal(12, 2)
+  certLab           String?
+  certNumber        String?
+  certUrl           String?
+  imageUrl          String?
+  image2Url         String?
+  image3Url         String?
+  image4Url         String?
+  videoUrl          String?
+  origin            String?
+  treatment         String?
+  rawFeedRow        Json
+  lastSeenAt        DateTime @default(now())
+  isAvailable       Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  cartItems         CartItem[]
+  favorites         Favorite[]
+
+  @@index([sku])
+  @@index([isAvailable])
+  @@index([weightCt])
+  @@index([feedRowIndex])
+  @@index([isAvailable, feedRowIndex, sku])
+}
+
+model Cart {
+  id        String     @id @default(cuid())
+  userId    String     @unique
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items     CartItem[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+}
+
+model CartItem {
+  id         String    @id @default(cuid())
+  cartId     String
+  cart       Cart      @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  gemstoneId String?
+  gemstone   Gemstone? @relation(fields: [gemstoneId], references: [id])
+  diamondId  String?
+  diamond    Diamond?  @relation(fields: [diamondId], references: [id])
+  qty        Int       @default(1)
+  addedAt    DateTime  @default(now())
+
+  @@unique([cartId, gemstoneId])
+  @@unique([cartId, diamondId])
+  @@index([cartId])
+  @@index([diamondId])
+}
+
+model Favorite {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  gemstoneId String?
+  gemstone   Gemstone? @relation(fields: [gemstoneId], references: [id], onDelete: Cascade)
+  diamondId  String?
+  diamond    Diamond?  @relation(fields: [diamondId], references: [id], onDelete: Cascade)
+  addedAt    DateTime  @default(now())
+
+  @@unique([userId, gemstoneId])
+  @@unique([userId, diamondId])
+  @@index([userId])
+  @@index([gemstoneId])
+  @@index([diamondId])
+}
+
+enum RequestType {
+  MEMO
+  INVOICE
+}
+
+enum RequestStatus {
+  PENDING
+  UNDER_REVIEW
+  APPROVED
+  PARTIALLY_APPROVED
+  REJECTED
+}
+
+enum RequestItemStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model Request {
+  id          String        @id @default(cuid())
+  seq         Int           @unique @default(autoincrement())
+  type        RequestType
+  status      RequestStatus @default(PENDING)
+  userId      String
+  user        User          @relation(fields: [userId], references: [id])
+  companyId   String
+  company     Company       @relation(fields: [companyId], references: [id])
+  note         String?
+  internalNote String       @default("")
+  externalNote String       @default("")
+  submittedAt  DateTime     @default(now())
+  reviewedAt   DateTime?
+  items        RequestItem[]
+
+  @@index([userId])
+  @@index([companyId])
+  @@index([status])
+}
+
+model RequestItem {
+  id               String            @id @default(cuid())
+  requestId        String
+  request          Request           @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  gemstoneId       String?
+  snapshotSku      String
+  snapshotPriceUsd Decimal           @db.Decimal(12, 2)
+  snapshotPayload  Json
+  status           RequestItemStatus @default(PENDING)
+
+  @@index([requestId])
+}
+
+model Diamond {
+  id                String   @id @default(cuid())
+  feedRowId         String   @unique
+  feedRowIndex      Int?
+  vendor            String
+  origin            String
+  sku               String
+  shapeRaw          String?
+  shapeMapped       String?
+  weightCt          Decimal? @db.Decimal(10, 3)
+  colorWhite        String?
+  fancyColor        String?
+  fancyIntensity    String?
+  fancyOvertone     String?
+  clarity           String?
+  clarityRank       Int?
+  cutGrade          String?
+  polish            String?
+  symmetry          String?
+  fluorescence      String?
+  lengthMm          Decimal? @db.Decimal(10, 3)
+  widthMm           Decimal? @db.Decimal(10, 3)
+  depthMm           Decimal? @db.Decimal(10, 3)
+  ratio             Decimal? @db.Decimal(10, 4)
+  depthPct          Decimal? @db.Decimal(6, 2)
+  tablePct          Decimal? @db.Decimal(6, 2)
+  girdle            String?
+  culet             String?
+  certLab           String?
+  certNumber        String?
+  certUrl           String?
+  treatment         String?
+  growthMethod      String?
+  basePricePerCtUsd Decimal? @db.Decimal(12, 2)
+  basePriceUsd      Decimal? @db.Decimal(12, 2)
+  state             String?
+  country           String?
+  photoUrl          String?
+  videoUrl          String?
+  rawFeedRow        Json
+  lastSeenAt        DateTime @default(now())
+  isAvailable       Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  favorites         Favorite[]
+  cartItems         CartItem[]
+
+  @@index([sku])
+  @@index([vendor])
+  @@index([origin])
+  @@index([isAvailable])
+  @@index([weightCt])
+  @@index([feedRowIndex])
+  @@index([clarityRank])
+  @@index([isAvailable, origin, feedRowIndex, sku])
+}
+
+model IngestState {
+  id            String    @id
+  lastFeedMtime DateTime?
+  lastRunAt     DateTime  @default(now())
+  lastRunStats  Json?
+  // Alerting state (A7.4): `alertActive` is true while the feed is in a known-bad
+  // state, so we alert on entry + re-alert on a throttle rather than every run;
+  // it flips back to false (with a recovery email) once a healthy run lands.
+  alertActive   Boolean   @default(false)
+  lastAlertAt   DateTime?
+  updatedAt     DateTime  @updatedAt
+}
+
+// Structured per-run history (A7.5). Previously only the single latest run lived
+// in IngestState.lastRunStats, so silent feed gaps were undiagnosable after the
+// fact. One row per ingest run; pruned to a rolling window in code.
+model IngestRun {
+  id                   String   @id @default(cuid())
+  status               String // "ok" | "no-files" | "error"
+  source               String? // "ftp" | "fallback"
+  rowsUpsertedTotal    Int      @default(0)
+  rowsParsedTotal      Int      @default(0)
+  filesProcessed       Int      @default(0)
+  diamondsMarkedStale  Int      @default(0)
+  gemstonesMarkedStale Int      @default(0)
+  skippedFilesCount    Int      @default(0)
+  durationMs           Int      @default(0)
+  errorText            String?
+  createdAt            DateTime @default(now())
+
+  @@index([createdAt])
+}
