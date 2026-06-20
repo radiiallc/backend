@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "build": "prisma generate",
     "db:generate": "prisma generate",
+    "migrate:deploy": "prisma migrate deploy",
     "db:migrate:deploy": "dotenv -e .env.local -- prisma migrate deploy",
     "db:migrate:dev": "dotenv -e .env.local -- prisma migrate dev",
     "db:studio": "dotenv -e .env.local -- prisma studio",
