@@ -22,6 +22,13 @@ app.use(
     origin(origin, cb) {
       // allow same-origin / non-browser (no Origin header) + allow-listed origins
       if (!origin || env.allowedOrigins.includes(origin)) return cb(null, true);
+      // Log the rejected origin so a misconfigured ALLOWED_ORIGINS surfaces in
+      // the host logs instead of an opaque 500 + a generic "can't reach server"
+      // in the browser. Show the current allow-list to make the fix obvious.
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[cors] rejected origin ${origin}; allowed: ${env.allowedOrigins.join(", ") || "(none)"}`
+      );
       cb(new Error(`Origin not allowed by CORS: ${origin}`));
     },
     credentials: true
