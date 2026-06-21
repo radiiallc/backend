@@ -1,7 +1,12 @@
 import { prisma } from "@/db";
 import type { AdminActionResult, MarkupUpdateBody } from "@/contract";
 
-import { sendAccountApprovalEmail, sendAccountDeclineEmail } from "../../integrations/email";
+import {
+  sendAccountApprovalEmail,
+  sendAccountDeclineEmail,
+  sendAccountSettingsChangeEmail,
+  type AccountSettingsChanges
+} from "../../integrations/email";
 
 // Port of the portal admin account actions. requireAdmin() + revalidatePath are
 // handled at the route layer (requireAdmin middleware); validation, status
@@ -93,26 +98,67 @@ export async function deactivateAccount(userId: string): Promise<AdminActionResu
   return { ok: true };
 }
 
+// Updates an account's pricing settings (credit limit + the three markups) and,
+// for any field that actually changed, notifies production@radiia.co. A null
+// input means "clear to 0", matching how markups have always been stored. The
+// notification is best-effort: if it fails the save still succeeds and we return
+// a warning, mirroring the approve/decline flows.
 export async function updateCompanyMarkups(
   companyId: string,
   markups: MarkupUpdateBody
 ): Promise<AdminActionResult> {
   if (!companyId) return { ok: false, error: "Missing companyId" };
 
-  for (const value of Object.values(markups)) {
+  const { creditLimitUsd, ...markupPcts } = markups;
+  for (const value of Object.values(markupPcts)) {
     if (value !== null && (Number.isNaN(value) || value < 0 || value > 1000)) {
       return { ok: false, error: "Markup must be between 0 and 1000" };
     }
   }
+  if (creditLimitUsd !== null && (!Number.isFinite(creditLimitUsd) || creditLimitUsd < 0)) {
+    return { ok: false, error: "Credit limit must be a positive amount" };
+  }
 
-  await prisma.company.update({
-    where: { id: companyId },
-    data: {
-      gemstoneMarkupPct: markups.gemstoneMarkupPct ?? 0,
-      naturalDiamondMarkupPct: markups.naturalDiamondMarkupPct ?? 0,
-      labDiamondMarkupPct: markups.labDiamondMarkupPct ?? 0
-    }
-  });
+  const existing = await prisma.company.findUnique({ where: { id: companyId } });
+  if (!existing) return { ok: false, error: "Company not found" };
+
+  const next = {
+    creditLimitUsd: creditLimitUsd ?? 0,
+    gemstoneMarkupPct: markups.gemstoneMarkupPct ?? 0,
+    naturalDiamondMarkupPct: markups.naturalDiamondMarkupPct ?? 0,
+    labDiamondMarkupPct: markups.labDiamondMarkupPct ?? 0
+  };
+
+  // Diff against current values (Prisma Decimals -> numbers) so the email lists
+  // only the fields that genuinely changed.
+  const changes: AccountSettingsChanges = {};
+  if (Number(existing.creditLimitUsd) !== next.creditLimitUsd) {
+    changes.creditLimitUsd = next.creditLimitUsd;
+  }
+  if (Number(existing.labDiamondMarkupPct) !== next.labDiamondMarkupPct) {
+    changes.labDiamondMarkupPct = next.labDiamondMarkupPct;
+  }
+  if (Number(existing.naturalDiamondMarkupPct) !== next.naturalDiamondMarkupPct) {
+    changes.naturalDiamondMarkupPct = next.naturalDiamondMarkupPct;
+  }
+  if (Number(existing.gemstoneMarkupPct) !== next.gemstoneMarkupPct) {
+    changes.gemstoneMarkupPct = next.gemstoneMarkupPct;
+  }
+
+  await prisma.company.update({ where: { id: companyId }, data: next });
+
+  if (Object.keys(changes).length === 0) return { ok: true };
+
+  try {
+    await sendAccountSettingsChangeEmail({ companyName: existing.name, changes });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : "unknown error";
+    console.error("[updateCompanyMarkups] settings-change email failed", err);
+    return {
+      ok: true,
+      warning: `Settings saved, but the notification email to production could not be sent: ${detail}.`
+    };
+  }
 
   return { ok: true };
 }

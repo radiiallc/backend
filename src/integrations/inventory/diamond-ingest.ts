@@ -7,6 +7,7 @@ import { sendIngestFailureAlert, sendIngestRecoveryAlert } from "../email";
 import { downloadIngestFile, listIngestFiles } from "./ftp-dir";
 import {
   detectFileTarget,
+  feedIdentityForTarget,
   parseRapNetCsv,
   type ParsedDiamond,
   type ParsedGemstone
@@ -150,6 +151,11 @@ export async function runUnifiedIngest(): Promise<IngestOutcome> {
           ? `${target.vendor} (${target.origin})`
           : "Gemstone";
 
+        // Per-feed upload signal: dl.mtime is the feed file's modify-time on the
+        // FTP (i.e. when the vendor last pushed it), which is what the dashboard
+        // shows so the team can spot a feed that has stopped updating.
+        const feed = feedIdentityForTarget(target);
+
         return {
           result: {
             name: file.name,
@@ -161,6 +167,7 @@ export async function runUnifiedIngest(): Promise<IngestOutcome> {
             parseMs,
             upsertMs
           },
+          feed: { key: feed.key, label: feed.label, mtime: dl.mtime, rowsParsed: parsed.rows.length },
           diamondRows,
           gemstoneRows,
           upsertCount
@@ -168,13 +175,27 @@ export async function runUnifiedIngest(): Promise<IngestOutcome> {
       })
     );
 
+    const feedsSeen = new Map<string, { label: string; mtime: Date; rowsParsed: number }>();
     for (const f of perFile) {
       if (!f) continue;
       fileResults.push(f.result);
       upsertTotal += f.upsertCount;
       for (const r of f.diamondRows) seenDiamondIds.add(r.feedRowId);
       for (const r of f.gemstoneRows) seenGemstoneIds.add(r.feedRowId);
+      const prev = feedsSeen.get(f.feed.key);
+      if (!prev) {
+        feedsSeen.set(f.feed.key, { label: f.feed.label, mtime: f.feed.mtime, rowsParsed: f.feed.rowsParsed });
+      } else {
+        if (f.feed.mtime > prev.mtime) prev.mtime = f.feed.mtime;
+        prev.rowsParsed += f.feed.rowsParsed;
+      }
     }
+
+    // Persist this run's per-feed upload timestamps. Only feeds present in this
+    // run are touched, so a feed whose file stopped arriving keeps its last-seen
+    // timestamp and shows as stale on the dashboard. Best-effort: bookkeeping
+    // here must never fail the ingest itself.
+    await recordFeedStatuses(feedsSeen);
 
     const diamondsStale = seenDiamondIds.size > 0
       ? { count: await markStale("Diamond", Array.from(seenDiamondIds)) }
@@ -616,4 +637,29 @@ async function touchIngestState(key: string, stats: unknown): Promise<void> {
       lastRunStats: stats as Prisma.InputJsonValue
     }
   });
+}
+
+// Per-feed ingest status lives in dedicated IngestState rows keyed "feed:<key>"
+// (e.g. "feed:skylab"), distinct from the main "ingest" row. `lastFeedMtime`
+// holds the feed file's upload time and `lastRunStats` carries the display label
+// + parsed-row count. Best-effort: a failure here is logged and swallowed so it
+// never affects the ingest outcome.
+async function recordFeedStatuses(
+  feeds: Map<string, { label: string; mtime: Date; rowsParsed: number }>
+): Promise<void> {
+  if (feeds.size === 0) return;
+  try {
+    await Promise.all(
+      Array.from(feeds.entries()).map(([key, fd]) => {
+        const stats = { label: fd.label, rowsParsed: fd.rowsParsed } as Prisma.InputJsonValue;
+        return prisma.ingestState.upsert({
+          where: { id: `feed:${key}` },
+          create: { id: `feed:${key}`, lastFeedMtime: fd.mtime, lastRunStats: stats },
+          update: { lastRunAt: new Date(), lastFeedMtime: fd.mtime, lastRunStats: stats }
+        });
+      })
+    );
+  } catch (err) {
+    console.error("[ingest] failed to record per-feed status", err);
+  }
 }

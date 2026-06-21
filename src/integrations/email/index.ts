@@ -260,6 +260,56 @@ export async function sendIngestRecoveryAlert(args: {
   });
 }
 
+// Notifies production@radiia.co (env.notificationEmail) when an admin changes a
+// client account's credit limit or any of its markups. Only the fields that
+// actually changed are passed in `changes`, and only those lines are rendered —
+// so the email always reflects exactly what was updated.
+export type AccountSettingsChanges = {
+  creditLimitUsd?: number;
+  labDiamondMarkupPct?: number;
+  naturalDiamondMarkupPct?: number;
+  gemstoneMarkupPct?: number;
+};
+
+function formatUsdAmount(value: number): string {
+  return `$${value.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+}
+
+function formatPct(value: number): string {
+  // Drop trailing zeros so 15.00 -> "15", but keep 12.5 -> "12.5".
+  return `${Number(value.toFixed(2))}%`;
+}
+
+export async function sendAccountSettingsChangeEmail(args: {
+  companyName: string;
+  changes: AccountSettingsChanges;
+}): Promise<void> {
+  const lines: string[] = [];
+  if (args.changes.creditLimitUsd !== undefined) {
+    lines.push(`New credit limit: ${formatUsdAmount(args.changes.creditLimitUsd)}`);
+  }
+  if (args.changes.labDiamondMarkupPct !== undefined) {
+    lines.push(`New lab diamond markup: ${formatPct(args.changes.labDiamondMarkupPct)}`);
+  }
+  if (args.changes.naturalDiamondMarkupPct !== undefined) {
+    lines.push(`New natural diamond markup: ${formatPct(args.changes.naturalDiamondMarkupPct)}`);
+  }
+  if (args.changes.gemstoneMarkupPct !== undefined) {
+    lines.push(`New gemstones markup: ${formatPct(args.changes.gemstoneMarkupPct)}`);
+  }
+  // Nothing actually changed — don't send a meaningless notification.
+  if (lines.length === 0) return;
+
+  await sendPlainText({
+    to: env.notificationEmail,
+    subject: `RADIIA account settings changed: ${args.companyName}`,
+    text:
+      `Please note that ${args.companyName}'s settings have changed.\n\n` +
+      lines.join("\n") +
+      `\n`
+  });
+}
+
 export type RequestReviewItem = {
   sku: string;
   varietyOrName: string;

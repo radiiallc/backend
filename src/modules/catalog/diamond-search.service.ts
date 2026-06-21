@@ -1,5 +1,5 @@
 import { Prisma, prisma } from "@/db";
-import { resolveStillImageUrl, sanitizeMediaUrl } from "@/domain";
+import { diamondGradeTokensForFilter, resolveStillImageUrl, sanitizeMediaUrl } from "@/domain";
 import type {
   DiamondCard,
   DiamondFilterBounds,
@@ -83,22 +83,31 @@ function buildWhere(
       OR: clarities.map((c) => ({ clarity: { equals: c, mode: "insensitive" as const } }))
     });
   }
+  // Cut/polish/symmetry are stored as raw RapNet tokens ("EX", "VG", ...) while
+  // the UI sends human-readable grades. Expand each chosen grade to the stored
+  // tokens it covers and match by equality; fall back to the raw value if a
+  // grade isn't in the map so an unknown choice is never silently dropped.
+  const gradeTokens = (values: string[]): string[] =>
+    values.flatMap((v) => {
+      const tokens = diamondGradeTokensForFilter(v);
+      return tokens.length ? tokens : [v];
+    });
   const cuts = filters.cut?.filter(Boolean) ?? [];
   if (cuts.length) {
     and.push({
-      OR: cuts.map((c) => ({ cutGrade: { contains: c, mode: "insensitive" as const } }))
+      OR: gradeTokens(cuts).map((t) => ({ cutGrade: { equals: t, mode: "insensitive" as const } }))
     });
   }
   const polishes = filters.polish?.filter(Boolean) ?? [];
   if (polishes.length) {
     and.push({
-      OR: polishes.map((c) => ({ polish: { contains: c, mode: "insensitive" as const } }))
+      OR: gradeTokens(polishes).map((t) => ({ polish: { equals: t, mode: "insensitive" as const } }))
     });
   }
   const symmetries = filters.symmetry?.filter(Boolean) ?? [];
   if (symmetries.length) {
     and.push({
-      OR: symmetries.map((c) => ({ symmetry: { contains: c, mode: "insensitive" as const } }))
+      OR: gradeTokens(symmetries).map((t) => ({ symmetry: { equals: t, mode: "insensitive" as const } }))
     });
   }
   const labs = filters.lab?.filter(Boolean) ?? [];
