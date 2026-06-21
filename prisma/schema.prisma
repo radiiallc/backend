@@ -16,6 +16,7 @@ model Company {
   website                 String?
   shippingAddress         String?
   internalNotes           String    @default("")
+  creditLimitUsd          Decimal   @default(0) @db.Decimal(12, 2)
   gemstoneMarkupPct       Decimal   @default(0) @db.Decimal(6, 2)
   labDiamondMarkupPct     Decimal   @default(0) @db.Decimal(6, 2)
   naturalDiamondMarkupPct Decimal   @default(0) @db.Decimal(6, 2)

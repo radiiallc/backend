@@ -60,26 +60,50 @@ export async function getRequestByIdFromDb(id: string): Promise<AdminRequest | n
   return request ? prismaRequestToAdminRequest(request) : null;
 }
 
+// Order the per-feed rows the way the team reads them; any unknown feed falls to
+// the end. Keyed by the "feed:<key>" suffix.
+const FEED_ORDER = ["skylab", "disons", "gemstones"];
+
 export async function getDashboardKpisFromDb(): Promise<DashboardKpis> {
   const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
-  const [pendingAccounts, pendingRequests, requestsThisWeek, ingestState] = await Promise.all([
-    prisma.user.count({ where: { role: "BUYER", status: "PENDING" } }),
-    prisma.request.count({ where: { status: { in: ["PENDING", "UNDER_REVIEW"] } } }),
-    prisma.request.count({ where: { submittedAt: { gte: weekAgo } } }),
-    prisma.ingestState.findFirst({ orderBy: { lastRunAt: "desc" } })
-  ]);
+  const [pendingAccounts, pendingRequests, requestsThisWeek, ingestState, feedStates] =
+    await Promise.all([
+      prisma.user.count({ where: { role: "BUYER", status: "PENDING" } }),
+      prisma.request.count({ where: { status: { in: ["PENDING", "UNDER_REVIEW"] } } }),
+      prisma.request.count({ where: { submittedAt: { gte: weekAgo } } }),
+      prisma.ingestState.findUnique({ where: { id: "ingest" } }),
+      prisma.ingestState.findMany({ where: { id: { startsWith: "feed:" } } })
+    ]);
 
-  const stats = (ingestState?.lastRunStats ?? null) as { rowsUpserted?: number } | null;
+  const stats = (ingestState?.lastRunStats ?? null) as { rowsUpsertedTotal?: number } | null;
   const lastIngestRowCount =
-    typeof stats?.rowsUpserted === "number" ? stats.rowsUpserted : null;
+    typeof stats?.rowsUpsertedTotal === "number" ? stats.rowsUpsertedTotal : null;
+
+  const ingestFeeds = feedStates
+    .map((s) => {
+      const key = s.id.slice("feed:".length);
+      const feedStats = (s.lastRunStats ?? null) as { label?: string; rowsParsed?: number } | null;
+      return {
+        feed: key,
+        label: feedStats?.label ?? key,
+        lastUploadAt: s.lastFeedMtime?.toISOString() ?? null,
+        rowsParsed: typeof feedStats?.rowsParsed === "number" ? feedStats.rowsParsed : 0
+      };
+    })
+    .sort((a, b) => {
+      const ai = FEED_ORDER.indexOf(a.feed);
+      const bi = FEED_ORDER.indexOf(b.feed);
+      return (ai === -1 ? FEED_ORDER.length : ai) - (bi === -1 ? FEED_ORDER.length : bi);
+    });
 
   return {
     pendingAccounts,
     pendingRequests,
     requestsThisWeek,
     lastIngestRunAt: ingestState?.lastRunAt?.toISOString() ?? null,
-    lastIngestRowCount
+    lastIngestRowCount,
+    ingestFeeds
   };
 }
 

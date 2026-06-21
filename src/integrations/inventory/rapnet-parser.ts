@@ -97,6 +97,16 @@ export function detectFileTarget(filename: string): FileTarget | null {
   return null;
 }
 
+// A "feed" is one upstream source the team monitors. `key` is the stable id used
+// to persist per-feed ingest status; `label` is what the dashboard shows. The
+// gemstone feed is RADIIA's own stones, hence the "RADIIA" label.
+export type FeedIdentity = { key: string; label: string };
+
+export function feedIdentityForTarget(target: FileTarget): FeedIdentity {
+  if (target.kind === "gemstone") return { key: "gemstones", label: "RADIIA" };
+  return { key: target.vendor.toLowerCase(), label: target.vendor };
+}
+
 export function parseRapNetCsv(csvText: string, target: FileTarget): RapNetParseSummary {
   const records = parse(csvText, {
     columns: true,

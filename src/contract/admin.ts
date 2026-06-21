@@ -25,6 +25,7 @@ export const AdminCompanySchema = z.object({
   id: z.string(),
   name: z.string(),
   shippingAddress: z.string(),
+  creditLimitUsd: z.number().nullable(),
   gemstoneMarkupPct: z.number().nullable(),
   naturalDiamondMarkupPct: z.number().nullable(),
   labDiamondMarkupPct: z.number().nullable(),
@@ -78,12 +79,24 @@ export const AdminRequestSchema = z.object({
 });
 export type AdminRequest = z.infer<typeof AdminRequestSchema>;
 
+// Per-feed last-upload status shown in the dashboard "Last ingest" box. One
+// entry per monitored feed (Skylab, Disons, RADIIA gemstones); `lastUploadAt` is
+// the feed file's upload time (ISO) or null if that feed has never been seen.
+export const IngestFeedStatusSchema = z.object({
+  feed: z.string(),
+  label: z.string(),
+  lastUploadAt: z.string().nullable(),
+  rowsParsed: z.number()
+});
+export type IngestFeedStatus = z.infer<typeof IngestFeedStatusSchema>;
+
 export const DashboardKpisSchema = z.object({
   pendingAccounts: z.number(),
   pendingRequests: z.number(),
   requestsThisWeek: z.number(),
   lastIngestRunAt: z.string().nullable(),
-  lastIngestRowCount: z.number().nullable()
+  lastIngestRowCount: z.number().nullable(),
+  ingestFeeds: z.array(IngestFeedStatusSchema)
 });
 export type DashboardKpis = z.infer<typeof DashboardKpisSchema>;
 
@@ -107,7 +120,11 @@ export const DeclineAccountBodySchema = z.object({
 });
 export type DeclineAccountBody = z.infer<typeof DeclineAccountBodySchema>;
 
+// Account pricing settings saved together from the admin account screen: the
+// credit limit ($) plus the three markup percentages. Bundled in one body so a
+// single save diffs every field and sends one "settings changed" email.
 export const MarkupUpdateBodySchema = z.object({
+  creditLimitUsd: z.number().nullable(),
   gemstoneMarkupPct: z.number().nullable(),
   naturalDiamondMarkupPct: z.number().nullable(),
   labDiamondMarkupPct: z.number().nullable()

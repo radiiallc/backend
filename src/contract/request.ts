@@ -55,6 +55,9 @@ export type BuyerRequestListItem = z.infer<typeof BuyerRequestListItemSchema>;
 
 export const BuyerRequestDetailItemSchema = z.object({
   id: z.string(),
+  // Inventory item id (gemstone or diamond) for linking to the item detail page.
+  // Null when the original item can no longer be resolved (legacy rows).
+  itemId: z.string().nullable(),
   sku: z.string(),
   status: RequestItemStatusSchema,
   qty: z.number(),

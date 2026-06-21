@@ -22,6 +22,7 @@ export function prismaCompanyToAdminCompany(c: PrismaCompany): AdminCompany {
     id: c.id,
     name: c.name,
     shippingAddress: c.shippingAddress ?? "",
+    creditLimitUsd: decimalToNumberOrNull(c.creditLimitUsd),
     gemstoneMarkupPct: decimalToNumberOrNull(c.gemstoneMarkupPct),
     naturalDiamondMarkupPct: decimalToNumberOrNull(c.naturalDiamondMarkupPct),
     labDiamondMarkupPct: decimalToNumberOrNull(c.labDiamondMarkupPct),
