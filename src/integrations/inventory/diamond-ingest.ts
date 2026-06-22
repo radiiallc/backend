@@ -410,7 +410,7 @@ const DIAMOND_CHANGE_COLUMNS = [
 const GEMSTONE_CHANGE_COLUMNS = [
   "feedRowIndex", "sku", "varietyRaw", "shapeRaw", "colorRaw", "weightCt", "lengthMm",
   "widthMm", "depthMm", "ratio", "basePriceUsd", "basePricePerCtUsd", "certLab",
-  "certNumber", "certUrl", "imageUrl", "videoUrl", "origin", "treatment", "isAvailable"
+  "certNumber", "certUrl", "imageUrl", "image2Url", "videoUrl", "origin", "treatment", "isAvailable"
 ];
 
 // Builds `"<table>"."col" IS DISTINCT FROM EXCLUDED."col" OR ...` for the upsert
@@ -573,7 +573,7 @@ async function bulkUpsertGemstones(input: ParsedGemstone[]): Promise<number> {
     ${r.certNumber},
     ${r.certUrl},
     ${r.imageUrl},
-    ${null},
+    ${r.image2Url},
     ${null},
     ${null},
     ${r.videoUrl},
@@ -613,6 +613,7 @@ async function bulkUpsertGemstones(input: ParsedGemstone[]): Promise<number> {
       "certNumber" = EXCLUDED."certNumber",
       "certUrl" = EXCLUDED."certUrl",
       "imageUrl" = EXCLUDED."imageUrl",
+      "image2Url" = EXCLUDED."image2Url",
       "videoUrl" = EXCLUDED."videoUrl",
       "origin" = EXCLUDED."origin",
       "treatment" = EXCLUDED."treatment",
