@@ -5,8 +5,10 @@ name: ingest
 
 on:
   schedule:
-    # Top of every hour (UTC). GitHub schedules can lag a few minutes under load.
-    - cron: "0 * * * *"
+    # Every 30 minutes (UTC), matching the original Vercel `*/30` cadence.
+    # Note: GitHub scheduled runs can lag (or rarely skip) under load, especially
+    # at :00 — so real arrival times drift a few minutes past :00/:30.
+    - cron: "0,30 * * * *"
   workflow_dispatch: {} # allow manual runs from the Actions tab
 
 jobs:
