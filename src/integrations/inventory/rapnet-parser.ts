@@ -63,6 +63,7 @@ export type ParsedGemstone = {
   certNumber: string | null;
   certUrl: string | null;
   imageUrl: string | null;
+  image2Url: string | null;
   videoUrl: string | null;
   origin: string | null;
   treatment: string | null;
@@ -194,6 +195,11 @@ export function parseRapNetCsv(csvText: string, target: FileTarget): RapNetParse
         certNumber,
         certUrl: nullable(raw["Certificate URL"]),
         imageUrl: stripVendorHost(pickMediaUrl(nullable(raw.PHOTO), "image")),
+        // Second image ("gem on hand"): the vendor serves these from its own host
+        // (radiia.fantasy.mn), so it can't go through stripVendorHost like PHOTO —
+        // that would always null it. Keep the raw vendor URL; it's never sent to the
+        // browser (the portal streams it through a same-domain proxy, Gate §8).
+        image2Url: secondImageUrl(nullable(raw.Image)),
         videoUrl: stripVendorHost(pickMediaUrl(nullable(raw.VIDEO), "video")),
         origin: gemstoneOrigin(raw),
         treatment: nullable(raw.Treatment),
@@ -315,6 +321,24 @@ function pickMediaUrl(raw: string | null, kind: "video" | "image"): string | nul
     segments.find((u) => !avoid.test(u)) ??
     segments[0]
   );
+}
+
+// Validate + normalize the gemstone "Image" (second image) cell. The vendor's
+// filenames are messy (spaces, stray punctuation) and some rows carry a directory
+// URL with no file (".../api/LotImage/"). Accept only a real http(s) URL that
+// points at a file; return the WHATWG-normalized href so the proxy can fetch it
+// without further encoding. Anything else → null.
+function secondImageUrl(raw: string | null): string | null {
+  if (!raw) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+  if (parsed.pathname.endsWith("/")) return null; // directory URL, no filename
+  return parsed.href;
 }
 
 function nullable(value: string | undefined): string | null {

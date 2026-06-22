@@ -5,6 +5,7 @@ import { requireInternal } from "../middleware/internal";
 import { getShareItems } from "../modules/internal/share.service";
 import { getFeedDiamondsPage } from "../modules/internal/feed.service";
 import { resolveCertUrl } from "../modules/internal/cert.service";
+import { resolveGemstoneImage2Url } from "../modules/internal/gem-image.service";
 
 // Service-to-service surface for the portal's session-less public/feed/proxy
 // routes. Gated by the shared INTERNAL_API_SECRET (requireInternal). Never
@@ -57,6 +58,35 @@ internalRouter.get("/certificate/:type/:id", async (req, res) => {
   }
   if (!upstream.ok || !upstream.body) {
     res.status(502).send("Certificate unavailable");
+    return;
+  }
+
+  res.status(200);
+  res.setHeader("Content-Type", upstream.headers.get("content-type") ?? "application/octet-stream");
+  res.setHeader("Content-Disposition", "inline");
+  res.setHeader("Cache-Control", "public, max-age=3600, s-maxage=86400");
+  Readable.fromWeb(upstream.body as Parameters<typeof Readable.fromWeb>[0]).pipe(res);
+});
+
+// GET /internal/gemstone-image/:id — resolves the gemstone's vendor second image
+// (gem-on-hand) URL server-side, fetches it, and streams the file back. The vendor
+// host never reaches the browser (Gate §8), same as the certificate proxy above.
+internalRouter.get("/gemstone-image/:id", async (req, res) => {
+  const imageUrl = await resolveGemstoneImage2Url(req.params.id);
+  if (!imageUrl || !isFetchableUrl(imageUrl)) {
+    res.status(404).send("Image not found");
+    return;
+  }
+
+  let upstream: globalThis.Response;
+  try {
+    upstream = await fetch(imageUrl, { redirect: "follow" });
+  } catch {
+    res.status(502).send("Image unavailable");
+    return;
+  }
+  if (!upstream.ok || !upstream.body) {
+    res.status(502).send("Image unavailable");
     return;
   }
 
