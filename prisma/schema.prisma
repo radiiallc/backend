@@ -36,29 +36,34 @@ enum UserStatus {
 enum UserRole {
   BUYER
   ADMIN
+  STAFF
 }
 
 model User {
-  id              String               @id @default(cuid())
-  email           String               @unique
-  passwordHash    String
-  fullName        String
-  phone           String?
-  location        String?
-  referredBy      String?
-  status          UserStatus           @default(PENDING)
-  role            UserRole             @default(BUYER)
-  approvedAt      DateTime?
-  companyId       String?
-  company         Company?             @relation(fields: [companyId], references: [id])
-  emailVerifiedAt DateTime?
-  createdAt       DateTime             @default(now())
-  updatedAt       DateTime             @updatedAt
-  sessions        Session[]
-  resetTokens     PasswordResetToken[]
-  requests        Request[]
-  cart            Cart?
-  favorites       Favorite[]
+  id               String               @id @default(cuid())
+  email            String               @unique
+  passwordHash     String
+  fullName         String
+  phone            String?
+  location         String?
+  referredBy       String?
+  status           UserStatus           @default(PENDING)
+  role             UserRole             @default(BUYER)
+  approvedAt       DateTime?
+  companyId        String?
+  company          Company?             @relation(fields: [companyId], references: [id])
+  emailVerifiedAt  DateTime?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  sessions         Session[]
+  resetTokens      PasswordResetToken[]
+  requests         Request[]
+  cart             Cart?
+  favorites        Favorite[]
+  // IMS (Phase H1) — reuse User for admin/staff (decision D1); no separate AdminUser table.
+  clientUsers      ClientUser[]
+  createdDocuments Document[]
+  statusChanges    ItemStatusHistory[]
 
   @@index([companyId])
 }
@@ -86,20 +91,20 @@ model PasswordResetToken {
 }
 
 model Gemstone {
-  id                String   @id @default(cuid())
-  feedRowId         String   @unique
+  id                String     @id @default(cuid())
+  feedRowId         String     @unique
   feedRowIndex      Int?
   sku               String
   varietyRaw        String?
   shapeRaw          String?
   colorRaw          String?
-  weightCt          Decimal? @db.Decimal(10, 3)
-  lengthMm          Decimal? @db.Decimal(10, 3)
-  widthMm           Decimal? @db.Decimal(10, 3)
-  depthMm           Decimal? @db.Decimal(10, 3)
-  ratio             Decimal? @db.Decimal(10, 4)
-  basePriceUsd      Decimal? @db.Decimal(12, 2)
-  basePricePerCtUsd Decimal? @db.Decimal(12, 2)
+  weightCt          Decimal?   @db.Decimal(10, 3)
+  lengthMm          Decimal?   @db.Decimal(10, 3)
+  widthMm           Decimal?   @db.Decimal(10, 3)
+  depthMm           Decimal?   @db.Decimal(10, 3)
+  ratio             Decimal?   @db.Decimal(10, 4)
+  basePriceUsd      Decimal?   @db.Decimal(12, 2)
+  basePricePerCtUsd Decimal?   @db.Decimal(12, 2)
   certLab           String?
   certNumber        String?
   certUrl           String?
@@ -111,10 +116,10 @@ model Gemstone {
   origin            String?
   treatment         String?
   rawFeedRow        Json
-  lastSeenAt        DateTime @default(now())
-  isAvailable       Boolean  @default(true)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  lastSeenAt        DateTime   @default(now())
+  isAvailable       Boolean    @default(true)
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
   cartItems         CartItem[]
   favorites         Favorite[]
 
@@ -188,18 +193,18 @@ enum RequestItemStatus {
 }
 
 model Request {
-  id          String        @id @default(cuid())
-  seq         Int           @unique @default(autoincrement())
-  type        RequestType
-  status      RequestStatus @default(PENDING)
-  userId      String
-  user        User          @relation(fields: [userId], references: [id])
-  companyId   String
-  company     Company       @relation(fields: [companyId], references: [id])
+  id           String        @id @default(cuid())
+  seq          Int           @unique @default(autoincrement())
+  type         RequestType
+  status       RequestStatus @default(PENDING)
+  userId       String
+  user         User          @relation(fields: [userId], references: [id])
+  companyId    String
+  company      Company       @relation(fields: [companyId], references: [id])
   note         String?
-  internalNote String       @default("")
-  externalNote String       @default("")
-  submittedAt  DateTime     @default(now())
+  internalNote String        @default("")
+  externalNote String        @default("")
+  submittedAt  DateTime      @default(now())
   reviewedAt   DateTime?
   items        RequestItem[]
 
@@ -222,15 +227,15 @@ model RequestItem {
 }
 
 model Diamond {
-  id                String   @id @default(cuid())
-  feedRowId         String   @unique
+  id                String     @id @default(cuid())
+  feedRowId         String     @unique
   feedRowIndex      Int?
   vendor            String
   origin            String
   sku               String
   shapeRaw          String?
   shapeMapped       String?
-  weightCt          Decimal? @db.Decimal(10, 3)
+  weightCt          Decimal?   @db.Decimal(10, 3)
   colorWhite        String?
   fancyColor        String?
   fancyIntensity    String?
@@ -241,12 +246,12 @@ model Diamond {
   polish            String?
   symmetry          String?
   fluorescence      String?
-  lengthMm          Decimal? @db.Decimal(10, 3)
-  widthMm           Decimal? @db.Decimal(10, 3)
-  depthMm           Decimal? @db.Decimal(10, 3)
-  ratio             Decimal? @db.Decimal(10, 4)
-  depthPct          Decimal? @db.Decimal(6, 2)
-  tablePct          Decimal? @db.Decimal(6, 2)
+  lengthMm          Decimal?   @db.Decimal(10, 3)
+  widthMm           Decimal?   @db.Decimal(10, 3)
+  depthMm           Decimal?   @db.Decimal(10, 3)
+  ratio             Decimal?   @db.Decimal(10, 4)
+  depthPct          Decimal?   @db.Decimal(6, 2)
+  tablePct          Decimal?   @db.Decimal(6, 2)
   girdle            String?
   culet             String?
   certLab           String?
@@ -254,17 +259,17 @@ model Diamond {
   certUrl           String?
   treatment         String?
   growthMethod      String?
-  basePricePerCtUsd Decimal? @db.Decimal(12, 2)
-  basePriceUsd      Decimal? @db.Decimal(12, 2)
+  basePricePerCtUsd Decimal?   @db.Decimal(12, 2)
+  basePriceUsd      Decimal?   @db.Decimal(12, 2)
   state             String?
   country           String?
   photoUrl          String?
   videoUrl          String?
   rawFeedRow        Json
-  lastSeenAt        DateTime @default(now())
-  isAvailable       Boolean  @default(true)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  lastSeenAt        DateTime   @default(now())
+  isAvailable       Boolean    @default(true)
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
   favorites         Favorite[]
   cartItems         CartItem[]
 
@@ -309,4 +314,320 @@ model IngestRun {
   createdAt            DateTime @default(now())
 
   @@index([createdAt])
+}
+
+// =====================================================================
+// Phase H1 — In-house IMS (additive; existing models above untouched).
+// Model shape B: InventoryItem core + per-type detail tables (1:1).
+// Paths/decisions per docs/phase-h/IMPLEMENTATION_PLAN.md §H1 + field-map.md.
+// =====================================================================
+
+// ---- H1.1 Enums ----------------------------------------------------
+
+enum ItemType {
+  STONE
+  JEWELRY
+  OTHER_MATERIAL
+}
+
+enum ItemSubtype {
+  SINGLE
+  PAIR
+  PARCEL
+}
+
+enum ItemStatus {
+  IN_STOCK
+  ON_MEMO
+  ON_CONSIGNMENT
+  SOLD
+  RETURNED
+}
+
+// Per-line status on a document line. Mirrors ItemStatus but kept distinct:
+// one document can carry lines in mixed states (§H6.1).
+enum LineStatus {
+  IN_STOCK
+  ON_MEMO
+  ON_CONSIGNMENT
+  SOLD
+  RETURNED
+}
+
+enum DocumentType {
+  BILL_IN
+  MEMO_IN
+  BRAND_INVENTORY_IN
+  MEMO_OUT
+  CONSIGNMENT_OUT
+  INVOICE
+  PURCHASE_ORDER
+  RETURN_MEMO_OUT
+  RETURN_MEMO_IN
+  BRAND_INVENTORY_OUT
+}
+
+// Superset across all document types; the valid subset per type is enforced
+// in the app layer (docx Table 9), not by the DB.
+enum DocumentStatus {
+  OPEN
+  CLOSED
+  EXPORTED
+  BILLED
+  VOID
+}
+
+enum CertLab {
+  GIA
+  IGI
+  NONE
+}
+
+// Stone "Type" column (field-map row 25) — 🟡 provisional, assumed Natural/Lab
+// pending Jennifer's confirmation (§5 D-open).
+enum StoneType {
+  NATURAL
+  LAB
+}
+
+// ---- H1.2 Inventory models (shape B) -------------------------------
+
+model InventoryItem {
+  id              String       @id @default(cuid())
+  sku             String       @unique
+  itemType        ItemType
+  itemSubtype     ItemSubtype? // stones only (SINGLE / PAIR / PARCEL)
+  status          ItemStatus   @default(IN_STOCK)
+  vendorId        String?
+  vendor          Vendor?      @relation(fields: [vendorId], references: [id])
+  brandOwnerId    String? // → Client (brand-inventory owner)
+  brandOwner      Client?      @relation("ClientBrandItems", fields: [brandOwnerId], references: [id])
+  visibleOnPortal Boolean      @default(false)
+  notes           String?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  stoneDetail         StoneDetail?
+  jewelryDetail       JewelryDetail?
+  otherMaterialDetail OtherMaterialDetail?
+  lineItems           DocumentLineItem[]
+  statusHistory       ItemStatusHistory[]
+
+  @@index([status])
+  @@index([itemType])
+  @@index([vendorId])
+  @@index([brandOwnerId])
+  @@index([visibleOnPortal])
+}
+
+model StoneDetail {
+  id              String        @id @default(cuid())
+  inventoryItemId String        @unique
+  inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
+
+  gemType  String? // gems only
+  shape    String?
+  weightCt Decimal? @db.Decimal(10, 3)
+  quantity Int? // parcel running qty (decrements on partial sale — H6.5)
+
+  color          String?
+  fancyColor     String? // diamonds only
+  fancyIntensity String? // diamonds only
+  fancyOvertone  String? // diamonds only
+  clarity        String? // diamonds only
+  cutGrade       String? // diamonds only
+  polish         String? // diamonds only
+  symmetry       String? // diamonds only
+  fluorescence   String? // diamonds only
+
+  lengthMm Decimal? @db.Decimal(10, 3)
+  widthMm  Decimal? @db.Decimal(10, 3)
+  heightMm Decimal? @db.Decimal(10, 3)
+  depthPct Decimal? @db.Decimal(6, 2)
+  tablePct Decimal? @db.Decimal(6, 2)
+  girdle   String?
+  ratio    Decimal? @db.Decimal(10, 4) // ⚙️ computeDerived(): lengthMm / widthMm
+
+  lab          CertLab    @default(NONE)
+  certNumber   String?
+  certUrl      String? // server-side read only (Gate §6.8)
+  naturalOrLab StoneType? // 🟡 field-map row 25
+  origin       String? // gems only; always manual
+  treatment    String? // gems only; always manual
+
+  wholesalePricePerCt Decimal? @db.Decimal(12, 2)
+  costPerCt           Decimal? @db.Decimal(12, 2)
+  totalWholesalePrice Decimal? @db.Decimal(12, 2) // ⚙️ computeDerived(): weightCt × perCt (×qty for parcel)
+  totalCost           Decimal? @db.Decimal(12, 2) // ⚙️ computeDerived()
+
+  photo1Url String? // Supabase Storage object path (field-map §5)
+  photo2Url String?
+  videoUrl  String?
+}
+
+model JewelryDetail {
+  id              String        @id @default(cuid())
+  inventoryItemId String        @unique
+  inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
+
+  brand           String?
+  jewelryItemType String?
+  metal           String?
+  ringSize        String?
+  lengthMm        Decimal? @db.Decimal(10, 3)
+  productionCost  Decimal? @db.Decimal(12, 2)
+  wholesalePrice  Decimal? @db.Decimal(12, 2)
+  retailPrice     Decimal? @db.Decimal(12, 2)
+  description     String?
+  certNumber      String?
+}
+
+// 🟡 fields provisional — Jennifer §5 D2. Build the table; fields are WIP.
+model OtherMaterialDetail {
+  id              String        @id @default(cuid())
+  inventoryItemId String        @unique
+  inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
+
+  category     String?
+  materialType String?
+  metal        String?
+  cost         Decimal?  @db.Decimal(12, 2)
+  dateIn       DateTime?
+  lengthMm     Decimal?  @db.Decimal(10, 3)
+  otherSpecs   String?
+}
+
+// ---- H1.3 Parties --------------------------------------------------
+
+model Vendor {
+  id                   String          @id @default(cuid())
+  name                 String
+  contactName          String?
+  contactEmail         String?
+  contactPhone         String?
+  address              String?
+  defaultMemoTermsDays Int?
+  quickbooksId         String?
+  notes                String?
+  createdAt            DateTime        @default(now())
+  items                InventoryItem[]
+  documents            Document[]
+}
+
+model Client {
+  id               String          @id @default(cuid())
+  name             String
+  contactName      String?
+  contactEmail     String?
+  contactPhone     String?
+  address          String?
+  creditLimit      Decimal?        @db.Decimal(12, 2)
+  defaultTermsDays Int?
+  quickbooksId     String?
+  notes            String?
+  createdAt        DateTime        @default(now())
+  clientUsers      ClientUser[]
+  documents        Document[]
+  brandItems       InventoryItem[] @relation("ClientBrandItems")
+}
+
+// Join Client ↔ existing User (BUYER). The buyer Company concept maps onto Client (D4).
+model ClientUser {
+  id        String   @id @default(cuid())
+  clientId  String
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      String?
+  createdAt DateTime @default(now())
+
+  @@unique([clientId, userId])
+  @@index([userId])
+}
+
+// ---- H1.4 Documents ------------------------------------------------
+
+model Document {
+  id             String         @id @default(cuid())
+  type           DocumentType
+  documentNumber String         @unique
+  status         DocumentStatus @default(OPEN)
+  clientId       String?
+  client         Client?        @relation(fields: [clientId], references: [id])
+  vendorId       String?
+  vendor         Vendor?        @relation(fields: [vendorId], references: [id])
+  issueDate      DateTime       @default(now())
+  dueDate        DateTime?
+  projectJob     String?
+  discountAmount Decimal?       @db.Decimal(12, 2)
+  notes          String?
+  emailedAt      DateTime?
+  qboSyncedAt    DateTime?
+  qboReferenceId String?
+
+  // invoice → PO (auto-PO, §6.4) and bill → PO links (self-relations).
+  linkedPoId      String?
+  linkedPo        Document?  @relation("InvoiceToPo", fields: [linkedPoId], references: [id])
+  invoicesLinking Document[] @relation("InvoiceToPo")
+  billedPoId      String?
+  billedPo        Document?  @relation("BillToPo", fields: [billedPoId], references: [id])
+  billsLinking    Document[] @relation("BillToPo")
+
+  createdById String
+  createdBy   User     @relation(fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  lineItems     DocumentLineItem[]
+  statusHistory ItemStatusHistory[]
+
+  @@index([type, status])
+  @@index([clientId])
+  @@index([vendorId])
+  @@index([dueDate])
+}
+
+model DocumentLineItem {
+  id              String        @id @default(cuid())
+  documentId      String
+  document        Document      @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  inventoryItemId String
+  inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id])
+  lineStatus      LineStatus
+  quantity        Int?
+  caratWeight     Decimal?      @db.Decimal(10, 3)
+  unitPrice       Decimal?      @db.Decimal(12, 2)
+  totalPrice      Decimal?      @db.Decimal(12, 2)
+  discountAmount  Decimal?      @db.Decimal(12, 2)
+  clientReference String? // Memo Out / Invoice; carry-over rules §6.5
+  notes           String?
+  createdAt       DateTime      @default(now())
+
+  @@index([documentId])
+  @@index([inventoryItemId])
+}
+
+// Every status change goes through a document + a history row (Gate §6.15).
+model ItemStatusHistory {
+  id              String        @id @default(cuid())
+  inventoryItemId String
+  inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
+  previousStatus  ItemStatus?
+  newStatus       ItemStatus
+  documentId      String?
+  document        Document?     @relation(fields: [documentId], references: [id])
+  changedById     String
+  changedBy       User          @relation(fields: [changedById], references: [id])
+  changedAt       DateTime      @default(now())
+  notes           String?
+
+  @@index([inventoryItemId])
+}
+
+// Per-type monotonic counter for document numbers (INV-0001 etc.); never resets
+// or reuses (Gate §6.16). Incremented under a row lock in a transaction.
+model DocumentSequence {
+  type      String   @id // DocumentType value as the key
+  lastValue Int      @default(0)
+  updatedAt DateTime @updatedAt
 }
