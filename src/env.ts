@@ -82,6 +82,14 @@ export const env = {
     .map((s) => s.trim())
     .filter(Boolean),
 
+  // Supabase Storage for RADIIA-owned inventory media (H3.3). Optional so the
+  // app boots without it; the media endpoints return 503 until configured. The
+  // bucket must be PRIVATE (media is served via short-lived signed URLs, never a
+  // public bucket). The service-role key is server-only — never sent to a client.
+  supabaseUrl: optional("SUPABASE_URL", "").replace(/\/+$/, ""),
+  supabaseServiceRoleKey: optional("SUPABASE_SERVICE_ROLE_KEY", ""),
+  supabaseStorageBucket: optional("SUPABASE_STORAGE_BUCKET", "inventory-media"),
+
   gemstoneFtpHost: optional("GEMSTONE_FTP_HOST", ""),
   gemstoneFtpUser: optional("GEMSTONE_FTP_USER", ""),
   gemstoneFtpPassword: optional("GEMSTONE_FTP_PASSWORD", ""),
