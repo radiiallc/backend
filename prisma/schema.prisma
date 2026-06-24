@@ -338,6 +338,7 @@ enum ItemSubtype {
 
 enum ItemStatus {
   IN_STOCK
+  RESERVED // "hold" a stone for a buyer so it can't be double-promised (Jennifer 2026-06-23)
   ON_MEMO
   ON_CONSIGNMENT
   SOLD
@@ -383,11 +384,24 @@ enum CertLab {
   NONE
 }
 
-// Stone "Type" column (field-map row 25) — 🟡 provisional, assumed Natural/Lab
-// pending Jennifer's confirmation (§5 D-open).
+// Stone "Type" column (field-map row 25). ✅ Confirmed by Jennifer 2026-06-23:
+// diamonds must ALWAYS be clearly distinguished natural vs lab — catalog, detail,
+// and documents — "no room for misunderstandings." App layer requires this for
+// diamonds; left nullable here because non-diamond gems don't carry it.
 enum StoneType {
   NATURAL
   LAB
+}
+
+// "Other Materials" subtypes — defined with Jennifer 2026-06-23 (e.g. a
+// tennis-bracelet mounting). OTHER is the catch-all; Jennifer may add more later.
+enum OtherMaterialSubtype {
+  BRACELET_MOUNTING
+  EARRING_MOUNTING
+  EARRING_BACK
+  EARRING_POST
+  CLASP
+  OTHER
 }
 
 // ---- H1.2 Inventory models (shape B) -------------------------------
@@ -404,8 +418,19 @@ model InventoryItem {
   brandOwner      Client?      @relation("ClientBrandItems", fields: [brandOwnerId], references: [id])
   visibleOnPortal Boolean      @default(false)
   notes           String?
-  createdAt       DateTime     @default(now())
-  updatedAt       DateTime     @updatedAt
+
+  // Time in stock (Jennifer 2026-06-23): store just the date the item entered
+  // stock; "days in stock" is derived for display. No complex aging counters.
+  enteredStockAt DateTime @default(now())
+
+  // Hold / reserve (Jennifer 2026-06-23): a buyer request can "hold" a stone so
+  // it can't be double-promised. status flips to RESERVED; these record for whom.
+  reservedForClientId String?
+  reservedForClient   Client?   @relation("ClientReservedItems", fields: [reservedForClientId], references: [id])
+  reservedAt          DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   stoneDetail         StoneDetail?
   jewelryDetail       JewelryDetail?
@@ -417,6 +442,7 @@ model InventoryItem {
   @@index([itemType])
   @@index([vendorId])
   @@index([brandOwnerId])
+  @@index([reservedForClientId])
   @@index([visibleOnPortal])
 }
 
@@ -451,7 +477,7 @@ model StoneDetail {
   lab          CertLab    @default(NONE)
   certNumber   String?
   certUrl      String? // server-side read only (Gate §6.8)
-  naturalOrLab StoneType? // 🟡 field-map row 25
+  naturalOrLab StoneType? // ✅ Natural/Lab — always shown for diamonds (Jennifer 2026-06-23)
   origin       String? // gems only; always manual
   treatment    String? // gems only; always manual
 
@@ -482,19 +508,21 @@ model JewelryDetail {
   certNumber      String?
 }
 
-// 🟡 fields provisional — Jennifer §5 D2. Build the table; fields are WIP.
+// ✅ Fields locked with Jennifer 2026-06-23. Example item: a tennis-bracelet
+// mounting. SKU lives on InventoryItem; entry date on InventoryItem.enteredStockAt.
 model OtherMaterialDetail {
   id              String        @id @default(cuid())
   inventoryItemId String        @unique
   inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
 
-  category     String?
-  materialType String?
-  metal        String?
-  cost         Decimal?  @db.Decimal(12, 2)
-  dateIn       DateTime?
-  lengthMm     Decimal?  @db.Decimal(10, 3)
-  otherSpecs   String?
+  subtype     OtherMaterialSubtype?
+  metalType   String? // "Metal type"
+  lengthMm    Decimal?              @db.Decimal(10, 3)
+  widthMm     Decimal?              @db.Decimal(10, 3)
+  weightGrams Decimal?              @db.Decimal(10, 3) // metal mountings weighed in grams
+  quantity    Int?
+  description String? // free-form clarification
+  cost        Decimal?              @db.Decimal(12, 2) // acquisition cost (for valuation)
 }
 
 // ---- H1.3 Parties --------------------------------------------------
@@ -529,6 +557,7 @@ model Client {
   clientUsers      ClientUser[]
   documents        Document[]
   brandItems       InventoryItem[] @relation("ClientBrandItems")
+  reservedItems    InventoryItem[] @relation("ClientReservedItems")
 }
 
 // Join Client ↔ existing User (BUYER). The buyer Company concept maps onto Client (D4).
@@ -548,10 +577,18 @@ model ClientUser {
 // ---- H1.4 Documents ------------------------------------------------
 
 model Document {
-  id             String         @id @default(cuid())
-  type           DocumentType
-  documentNumber String         @unique
-  status         DocumentStatus @default(OPEN)
+  id   String       @id @default(cuid())
+  type DocumentType
+
+  // We generate a number only for documents WE originate (INVOICE, MEMO_OUT, …)
+  // via DocumentSequence. Inbound docs (BILL_IN/MEMO_IN/BRAND_INVENTORY_IN) carry
+  // the vendor's own number in externalReference instead — "not ours to assign"
+  // (Jennifer 2026-06-23). documentNumber is therefore nullable (NULLs are exempt
+  // from the unique constraint in Postgres); externalReference is non-unique
+  // (two vendors can both use "Memo 100").
+  documentNumber    String?        @unique
+  externalReference String?
+  status            DocumentStatus @default(OPEN)
   clientId       String?
   client         Client?        @relation(fields: [clientId], references: [id])
   vendorId       String?
@@ -624,10 +661,17 @@ model ItemStatusHistory {
   @@index([inventoryItemId])
 }
 
-// Per-type monotonic counter for document numbers (INV-0001 etc.); never resets
-// or reuses (Gate §6.16). Incremented under a row lock in a transaction.
+// Per-type monotonic counter for the document numbers WE assign; never resets or
+// reuses (Gate §6.16). Incremented under a row lock in a transaction.
+//
+// Numbering scheme locked with Jennifer 2026-06-23 — START FRESH (do NOT continue
+// Fantasy's numbers); human-friendly: start at 1000, increment by 3 (→ 1003, 1006,
+// 1009…), with a distinct letter prefix per type. Confirmed prefixes: INV- invoices,
+// MEM- memo-out (REQ- requests already exists on Request.seq). Other outbound
+// prefixes TBD. Only documents WE originate get a row here; inbound docs use the
+// vendor's own number (Document.externalReference). Prefix + step live in app code.
 model DocumentSequence {
   type      String   @id // DocumentType value as the key
-  lastValue Int      @default(0)
+  lastValue Int      @default(1000) // first issued number = 1000 + step (3) = 1003
   updatedAt DateTime @updatedAt
 }
