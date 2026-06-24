@@ -22,6 +22,16 @@ function numberOptional(name: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+// In-process ingest scheduler (see scheduler.ts). On by default in production
+// (the always-on Railway server is the reliable clock GitHub Actions was not),
+// off in dev/test unless explicitly turned on, and force-off with "false".
+function resolveSchedulerEnabled(): boolean {
+  const flag = process.env.INGEST_SCHEDULER_ENABLED;
+  if (flag === "true") return true;
+  if (flag === "false") return false;
+  return process.env.NODE_ENV === "production";
+}
+
 function resolveAppUrl(): string {
   const explicit = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL;
   if (explicit) return explicit.replace(/\/+$/, "");
@@ -48,6 +58,12 @@ export const env = {
 
   notificationEmail: optional("RADIIA_NOTIFICATION_EMAIL", "production@radiia.co"),
   ingestAlertThrottleHours: numberOptional("INGEST_ALERT_THROTTLE_HOURS", 6),
+
+  // In-process ingest scheduler — replaces the unreliable GitHub Actions cron
+  // (which was silently dropping ~80% of scheduled runs). Interval is clamped to
+  // a sane floor in scheduler.ts so a misconfig can't hammer the FTP feed.
+  ingestSchedulerEnabled: resolveSchedulerEnabled(),
+  ingestIntervalMinutes: numberOptional("INGEST_INTERVAL_MINUTES", 15),
   resendFromEmail: optional("RESEND_FROM_EMAIL", "RADIIA Portal <onboarding@resend.dev>"),
 
   // Shared secret for the service-to-service /internal API surface (share page,
