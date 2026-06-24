@@ -11,6 +11,7 @@ import { cartRouter } from "./routes/cart";
 import { cronRouter } from "./routes/cron";
 import { favoritesRouter } from "./routes/favorites";
 import { internalRouter } from "./routes/internal";
+import { inventoryRouter } from "./routes/ims/inventory";
 import { profileRouter } from "./routes/profile";
 import { requestsRouter } from "./routes/requests";
 import { startIngestScheduler } from "./scheduler";
@@ -66,6 +67,7 @@ app.use("/requests", requestsRouter);
 app.use("/admin", adminRouter);
 app.use("/cron", cronRouter);
 app.use("/internal", internalRouter);
+app.use("/ims/inventory", inventoryRouter);
 
 const server = app.listen(env.port, () => {
   // eslint-disable-next-line no-console
