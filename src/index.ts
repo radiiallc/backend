@@ -13,6 +13,7 @@ import { favoritesRouter } from "./routes/favorites";
 import { internalRouter } from "./routes/internal";
 import { profileRouter } from "./routes/profile";
 import { requestsRouter } from "./routes/requests";
+import { startIngestScheduler } from "./scheduler";
 
 const app = express();
 // CORS with credentials so the browser frontends can set/send the session
@@ -69,6 +70,9 @@ app.use("/internal", internalRouter);
 const server = app.listen(env.port, () => {
   // eslint-disable-next-line no-console
   console.log(`[api] listening on :${env.port} (${env.nodeEnv})`);
+  // Drive ingest from this always-on server instead of the unreliable GitHub
+  // Actions cron (which was dropping ~80% of scheduled runs).
+  startIngestScheduler();
 });
 
 function shutdown(signal: string) {
