@@ -28,6 +28,8 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
   next();
 }
 
+// requireAdmin: the ADMIN-only gate. Use for Settings + user management (spec
+// §12) — staff are deliberately blocked from these even in the IMS.
 export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
   if (!req.user) {
     res.status(401).json({ error: "Not authenticated" });
@@ -40,14 +42,16 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
   next();
 }
 
-// requireStaff: ADMIN today; widens to include the STAFF role once H1 adds it.
+// requireStaff: the IMS gate — allows ADMIN or STAFF. STAFF is live as of H1
+// (added to the UserRole enum + SessionUser). Every IMS API route (inventory,
+// documents, clients, vendors, reports — H3+) mounts this; the ADMIN-only
+// surfaces use requireAdmin instead.
 export function requireStaff(req: Request, res: Response, next: NextFunction): void {
   if (!req.user) {
     res.status(401).json({ error: "Not authenticated" });
     return;
   }
-  const role = req.user.role as string;
-  if (role !== "ADMIN" && role !== "STAFF") {
+  if (req.user.role !== "ADMIN" && req.user.role !== "STAFF") {
     res.status(403).json({ error: "Forbidden" });
     return;
   }
