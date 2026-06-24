@@ -1,15 +1,21 @@
-# Hourly inventory ingest — calls the backend's CRON_SECRET-gated ingest endpoint.
-# Replaces the old Vercel ingest cron. Add a repo secret CRON_SECRET (Settings ->
-# Secrets and variables -> Actions) equal to the backend's CRON_SECRET in Railway.
+# Manual inventory ingest — calls the backend's CRON_SECRET-gated ingest endpoint.
+#
+# The scheduled trigger is DISABLED. Ingest is now driven by the always-on Railway
+# server's in-process scheduler (backend/src/scheduler.ts), which is a far more
+# reliable clock than GitHub Actions — GitHub's `schedule:` was dropping ~80% of
+# runs for this repo, firing every 2-3h instead of every 30m and letting the feed
+# go stale. This workflow is kept only for manual/on-demand runs from the Actions
+# tab (workflow_dispatch). Do NOT re-enable `schedule:` while the in-process
+# scheduler is on, or the ingest will double-run.
+#
+# Requires a repo secret CRON_SECRET (Settings -> Secrets and variables ->
+# Actions) equal to the backend's CRON_SECRET in Railway.
 name: ingest
 
 on:
-  schedule:
-    # Every 30 minutes (UTC), matching the original Vercel `*/30` cadence.
-    # Note: GitHub scheduled runs can lag (or rarely skip) under load, especially
-    # at :00 — so real arrival times drift a few minutes past :00/:30.
-    - cron: "9,24,39,54 * * * *"
-  workflow_dispatch: {} # allow manual runs from the Actions tab
+  # schedule: DISABLED — see header. Driven by backend/src/scheduler.ts instead.
+  #   - cron: "9,24,39,54 * * * *"
+  workflow_dispatch: {} # manual runs only, from the Actions tab
 
 jobs:
   ingest:
