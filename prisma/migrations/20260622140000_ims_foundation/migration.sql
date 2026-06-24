@@ -1,3 +1,8 @@
+-- IMS foundation (Phase H1). Additive only — creates all in-house IMS objects
+-- on top of the MVP schema. Reflects Jennifer's locked decisions 2026-06-23
+-- (Natural/Lab, Other-Materials fields+subtypes, doc-numbering split, time-in-stock,
+-- hold/reserve). Generated via prisma migrate diff (datamodel→datamodel).
+
 -- CreateEnum
 CREATE TYPE "ItemType" AS ENUM ('STONE', 'JEWELRY', 'OTHER_MATERIAL');
 
@@ -5,7 +10,7 @@ CREATE TYPE "ItemType" AS ENUM ('STONE', 'JEWELRY', 'OTHER_MATERIAL');
 CREATE TYPE "ItemSubtype" AS ENUM ('SINGLE', 'PAIR', 'PARCEL');
 
 -- CreateEnum
-CREATE TYPE "ItemStatus" AS ENUM ('IN_STOCK', 'ON_MEMO', 'ON_CONSIGNMENT', 'SOLD', 'RETURNED');
+CREATE TYPE "ItemStatus" AS ENUM ('IN_STOCK', 'RESERVED', 'ON_MEMO', 'ON_CONSIGNMENT', 'SOLD', 'RETURNED');
 
 -- CreateEnum
 CREATE TYPE "LineStatus" AS ENUM ('IN_STOCK', 'ON_MEMO', 'ON_CONSIGNMENT', 'SOLD', 'RETURNED');
@@ -22,6 +27,9 @@ CREATE TYPE "CertLab" AS ENUM ('GIA', 'IGI', 'NONE');
 -- CreateEnum
 CREATE TYPE "StoneType" AS ENUM ('NATURAL', 'LAB');
 
+-- CreateEnum
+CREATE TYPE "OtherMaterialSubtype" AS ENUM ('BRACELET_MOUNTING', 'EARRING_MOUNTING', 'EARRING_BACK', 'EARRING_POST', 'CLASP', 'OTHER');
+
 -- AlterEnum
 ALTER TYPE "UserRole" ADD VALUE 'STAFF';
 
@@ -36,6 +44,9 @@ CREATE TABLE "InventoryItem" (
     "brandOwnerId" TEXT,
     "visibleOnPortal" BOOLEAN NOT NULL DEFAULT false,
     "notes" TEXT,
+    "enteredStockAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "reservedForClientId" TEXT,
+    "reservedAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
@@ -105,13 +116,14 @@ CREATE TABLE "JewelryDetail" (
 CREATE TABLE "OtherMaterialDetail" (
     "id" TEXT NOT NULL,
     "inventoryItemId" TEXT NOT NULL,
-    "category" TEXT,
-    "materialType" TEXT,
-    "metal" TEXT,
-    "cost" DECIMAL(12,2),
-    "dateIn" TIMESTAMP(3),
+    "subtype" "OtherMaterialSubtype",
+    "metalType" TEXT,
     "lengthMm" DECIMAL(10,3),
-    "otherSpecs" TEXT,
+    "widthMm" DECIMAL(10,3),
+    "weightGrams" DECIMAL(10,3),
+    "quantity" INTEGER,
+    "description" TEXT,
+    "cost" DECIMAL(12,2),
 
     CONSTRAINT "OtherMaterialDetail_pkey" PRIMARY KEY ("id")
 );
@@ -164,7 +176,8 @@ CREATE TABLE "ClientUser" (
 CREATE TABLE "Document" (
     "id" TEXT NOT NULL,
     "type" "DocumentType" NOT NULL,
-    "documentNumber" TEXT NOT NULL,
+    "documentNumber" TEXT,
+    "externalReference" TEXT,
     "status" "DocumentStatus" NOT NULL DEFAULT 'OPEN',
     "clientId" TEXT,
     "vendorId" TEXT,
@@ -220,7 +233,7 @@ CREATE TABLE "ItemStatusHistory" (
 -- CreateTable
 CREATE TABLE "DocumentSequence" (
     "type" TEXT NOT NULL,
-    "lastValue" INTEGER NOT NULL DEFAULT 0,
+    "lastValue" INTEGER NOT NULL DEFAULT 1000,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "DocumentSequence_pkey" PRIMARY KEY ("type")
@@ -240,6 +253,9 @@ CREATE INDEX "InventoryItem_vendorId_idx" ON "InventoryItem"("vendorId");
 
 -- CreateIndex
 CREATE INDEX "InventoryItem_brandOwnerId_idx" ON "InventoryItem"("brandOwnerId");
+
+-- CreateIndex
+CREATE INDEX "InventoryItem_reservedForClientId_idx" ON "InventoryItem"("reservedForClientId");
 
 -- CreateIndex
 CREATE INDEX "InventoryItem_visibleOnPortal_idx" ON "InventoryItem"("visibleOnPortal");
@@ -288,6 +304,9 @@ ALTER TABLE "InventoryItem" ADD CONSTRAINT "InventoryItem_vendorId_fkey" FOREIGN
 
 -- AddForeignKey
 ALTER TABLE "InventoryItem" ADD CONSTRAINT "InventoryItem_brandOwnerId_fkey" FOREIGN KEY ("brandOwnerId") REFERENCES "Client"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "InventoryItem" ADD CONSTRAINT "InventoryItem_reservedForClientId_fkey" FOREIGN KEY ("reservedForClientId") REFERENCES "Client"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "StoneDetail" ADD CONSTRAINT "StoneDetail_inventoryItemId_fkey" FOREIGN KEY ("inventoryItemId") REFERENCES "InventoryItem"("id") ON DELETE CASCADE ON UPDATE CASCADE;

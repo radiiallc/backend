@@ -4,6 +4,7 @@ import {
   ItemStatus,
   ItemSubtype,
   ItemType,
+  OtherMaterialSubtype,
   PrismaClient,
   StoneType,
   UserRole,
@@ -126,6 +127,8 @@ async function main() {
     subtype: ItemSubtype;
     qty: number; // 1 for SINGLE/PAIR; parcel count for PARCEL
     visibleOnPortal: boolean;
+    enteredDaysAgo?: number; // demo "days in stock"
+    reserved?: boolean; // demo the hold/reserve feature
     stone: {
       gemType?: string;
       shape: string;
@@ -175,6 +178,8 @@ async function main() {
       subtype: ItemSubtype.PAIR,
       qty: 1,
       visibleOnPortal: true,
+      enteredDaysAgo: 45,
+      reserved: true, // held for the demo client (hold/reserve feature)
       stone: {
         gemType: "Sapphire",
         shape: "Oval",
@@ -195,6 +200,7 @@ async function main() {
       subtype: ItemSubtype.PARCEL,
       qty: 50,
       visibleOnPortal: false,
+      enteredDaysAgo: 120,
       stone: {
         gemType: "Diamond",
         shape: "Round",
@@ -209,11 +215,34 @@ async function main() {
     }
   ];
 
+  const daysAgo = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000);
+
   for (const s of stones) {
     const ratio =
       s.stone.lengthMm && s.stone.widthMm ? round(s.stone.lengthMm / s.stone.widthMm) : null;
     const totalWholesale = round(s.stone.weightCt * s.stone.wholesalePricePerCt);
     const totalCost = round(s.stone.weightCt * s.stone.costPerCt);
+    const enteredStockAt = s.enteredDaysAgo ? daysAgo(s.enteredDaysAgo) : new Date();
+
+    // Initial stock-entry history; a held stone also gets an IN_STOCK→RESERVED row.
+    const history = [
+      {
+        previousStatus: null as ItemStatus | null,
+        newStatus: ItemStatus.IN_STOCK,
+        changedById: buyer.id, // placeholder actor; real flows use the acting admin/staff
+        notes: "Seed: initial stock entry.",
+        changedAt: enteredStockAt
+      }
+    ];
+    if (s.reserved) {
+      history.push({
+        previousStatus: ItemStatus.IN_STOCK,
+        newStatus: ItemStatus.RESERVED,
+        changedById: buyer.id,
+        notes: "Seed: held for the demo client.",
+        changedAt: new Date()
+      });
+    }
 
     await prisma.inventoryItem.upsert({
       where: { id: s.id },
@@ -223,9 +252,12 @@ async function main() {
         sku: s.sku,
         itemType: ItemType.STONE,
         itemSubtype: s.subtype,
-        status: ItemStatus.IN_STOCK,
+        status: s.reserved ? ItemStatus.RESERVED : ItemStatus.IN_STOCK,
         vendorId: vendor.id,
         visibleOnPortal: s.visibleOnPortal,
+        enteredStockAt,
+        reservedForClientId: s.reserved ? client.id : null,
+        reservedAt: s.reserved ? new Date() : null,
         stoneDetail: {
           create: {
             gemType: s.stone.gemType ?? null,
@@ -251,16 +283,47 @@ async function main() {
           }
         },
         statusHistory: {
-          create: {
-            previousStatus: null,
-            newStatus: ItemStatus.IN_STOCK,
-            changedById: buyer.id, // placeholder actor; real flows use the acting admin/staff
-            notes: "Seed: initial stock entry."
-          }
+          create: history
         }
       }
     });
   }
+
+  // An "Other Materials" item — a tennis-bracelet mounting (Jennifer's example).
+  await prisma.inventoryItem.upsert({
+    where: { id: "seed-other-mounting" },
+    update: {},
+    create: {
+      id: "seed-other-mounting",
+      sku: "RAD-M0001",
+      itemType: ItemType.OTHER_MATERIAL,
+      status: ItemStatus.IN_STOCK,
+      vendorId: vendor.id,
+      visibleOnPortal: false,
+      enteredStockAt: daysAgo(10),
+      otherMaterialDetail: {
+        create: {
+          subtype: OtherMaterialSubtype.BRACELET_MOUNTING,
+          metalType: "18K White Gold",
+          lengthMm: "180.0",
+          widthMm: "3.5",
+          weightGrams: "12.400",
+          quantity: 1,
+          description: "Tennis-bracelet mounting, 30 settings (~0.10ct each).",
+          cost: "950.00"
+        }
+      },
+      statusHistory: {
+        create: {
+          previousStatus: null,
+          newStatus: ItemStatus.IN_STOCK,
+          changedById: buyer.id,
+          notes: "Seed: initial stock entry.",
+          changedAt: daysAgo(10)
+        }
+      }
+    }
+  });
 
   console.log("Seed complete.");
 }
