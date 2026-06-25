@@ -196,7 +196,7 @@ export function parseRapNetCsv(csvText: string, target: FileTarget): RapNetParse
         certUrl: nullable(raw["Certificate URL"]),
         imageUrl: stripVendorHost(pickMediaUrl(nullable(raw.PHOTO), "image")),
         // Second image ("gem on hand"): the vendor serves these from its own host
-        // (radiia.fantasy.mn), so it can't go through stripVendorHost like PHOTO —
+        // (radiia2.fantasy.mn), so it can't go through stripVendorHost like PHOTO —
         // that would always null it. Keep the raw vendor URL; it's never sent to the
         // browser (the portal streams it through a same-domain proxy, Gate §8).
         image2Url: secondImageUrl(nullable(raw.Image)),
