@@ -12,6 +12,8 @@ import { cronRouter } from "./routes/cron";
 import { favoritesRouter } from "./routes/favorites";
 import { internalRouter } from "./routes/internal";
 import { inventoryRouter } from "./routes/ims/inventory";
+import { documentsRouter } from "./routes/ims/documents";
+import { clientsRouter, vendorsRouter } from "./routes/ims/parties";
 import { profileRouter } from "./routes/profile";
 import { requestsRouter } from "./routes/requests";
 import { startIngestScheduler } from "./scheduler";
@@ -68,6 +70,9 @@ app.use("/admin", adminRouter);
 app.use("/cron", cronRouter);
 app.use("/internal", internalRouter);
 app.use("/ims/inventory", inventoryRouter);
+app.use("/ims/documents", documentsRouter);
+app.use("/ims/vendors", vendorsRouter);
+app.use("/ims/clients", clientsRouter);
 
 const server = app.listen(env.port, () => {
   // eslint-disable-next-line no-console
