@@ -31,7 +31,9 @@ function effectiveVisibility(status: string, requested: boolean): boolean {
 }
 
 // ── Create payloads (full; absent → null/default) ────────────────────────────
-function stoneCreateData(
+// Exported so the document engine (H4) can build the same detail blocks for the
+// items an inbound document creates — one source of truth for detail shaping.
+export function stoneCreateData(
   input: StoneDetailInput
 ): Prisma.StoneDetailCreateWithoutInventoryItemInput {
   const derived = computeDerived(input);
@@ -69,7 +71,7 @@ function stoneCreateData(
   };
 }
 
-function jewelryCreateData(
+export function jewelryCreateData(
   input: JewelryDetailInput
 ): Prisma.JewelryDetailCreateWithoutInventoryItemInput {
   return {
@@ -86,7 +88,7 @@ function jewelryCreateData(
   };
 }
 
-function otherCreateData(
+export function otherCreateData(
   input: OtherMaterialDetailInput
 ): Prisma.OtherMaterialDetailCreateWithoutInventoryItemInput {
   return {
