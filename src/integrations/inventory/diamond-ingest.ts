@@ -35,6 +35,71 @@ async function parallelMap<T, R>(
   return results;
 }
 
+// --- Transient write-retry --------------------------------------------------
+// A write can fail mid-run if Postgres is momentarily read-only — e.g. a disk
+// pressure / autoscale-resize event or a failover flips the primary to read-only
+// (SQLSTATE 25006), or the server is briefly not accepting connections
+// (57P03 / 57P01). These windows are usually seconds long. The scheduler already
+// retries the whole run on the next tick, but riding out a short blip *inside* a
+// run avoids a failed run + alert email for a hiccup that clears on its own.
+//
+// This is a backstop for SHORT outages only: total backoff caps at ~15s, so a
+// genuine multi-hour read-only event (e.g. a full disk — the 2026-06-25 incident)
+// still fails the run by design. That failure is what surfaces the real problem,
+// so we deliberately do not try to paper over a sustained outage here.
+const RETRYABLE_PG_CODES = new Set([
+  "25006", // read_only_sql_transaction
+  "57P03", // cannot_connect_now (server starting / not accepting connections)
+  "57P01" // admin_shutdown (connection terminated, e.g. failover)
+]);
+const WRITE_RETRY_MAX_ATTEMPTS = 6; // 1 initial try + 5 retries
+const WRITE_RETRY_BASE_MS = 500;
+const WRITE_RETRY_CAP_MS = 8_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Returns the matched SQLSTATE if the error is a transient, retryable write
+// failure, else null. Prisma surfaces raw-query failures as a known-request error
+// (code P2010) with the Postgres SQLSTATE in `meta.code`; the code/phrase is also
+// embedded in the message text, so we check both.
+function retryablePgCode(err: unknown): string | null {
+  if (err instanceof Prisma.PrismaClientKnownRequestError) {
+    const metaCode = typeof err.meta?.code === "string" ? err.meta.code : null;
+    if (metaCode && RETRYABLE_PG_CODES.has(metaCode)) return metaCode;
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  for (const code of RETRYABLE_PG_CODES) {
+    if (msg.includes(code)) return code;
+  }
+  // Phrase fallback for the common case where the numeric code isn't in the text.
+  if (/read-only transaction/i.test(msg)) return "25006";
+  if (/not accepting connections/i.test(msg)) return "57P03";
+  return null;
+}
+
+// Runs a DB write, retrying with exponential backoff + jitter on a transient
+// read-only / unavailable error. Non-transient errors throw immediately.
+async function withWriteRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const code = retryablePgCode(err);
+      if (!code || attempt >= WRITE_RETRY_MAX_ATTEMPTS) throw err;
+      const backoff = Math.min(WRITE_RETRY_CAP_MS, WRITE_RETRY_BASE_MS * 2 ** (attempt - 1));
+      // Jitter avoids a thundering herd across the parallel upsert chunks.
+      const delay = backoff + Math.floor(Math.random() * 250);
+      console.warn(
+        `[ingest] write "${label}" hit transient ${code}; ` +
+          `retry ${attempt}/${WRITE_RETRY_MAX_ATTEMPTS - 1} in ${delay}ms`
+      );
+      await sleep(delay);
+    }
+  }
+}
+
 type PerFileResult = {
   name: string;
   target: string;
@@ -430,12 +495,14 @@ function changedPredicate(table: string, columns: string[]): Prisma.Sql {
 // `NOT IN ($1,$2,…,$10000)` literal list that is expensive to plan and ship.
 async function markStale(table: "Diamond" | "Gemstone", seenIds: string[]): Promise<number> {
   const tbl = Prisma.raw(`"${table}"`);
-  const affected = await prisma.$executeRaw(Prisma.sql`
-    UPDATE ${tbl}
-    SET "isAvailable" = false
-    WHERE "isAvailable" = true
-      AND "feedRowId" <> ALL(${seenIds}::text[])
-  `);
+  const affected = await withWriteRetry("markStale", () =>
+    prisma.$executeRaw(Prisma.sql`
+      UPDATE ${tbl}
+      SET "isAvailable" = false
+      WHERE "isAvailable" = true
+        AND "feedRowId" <> ALL(${seenIds}::text[])
+    `)
+  );
   return affected;
 }
 
@@ -547,7 +614,7 @@ async function bulkUpsertDiamonds(input: ParsedDiamond[]): Promise<number> {
     WHERE ${changedPredicate("Diamond", DIAMOND_CHANGE_COLUMNS)}
   `;
   // Returns rows actually inserted/updated; unchanged rows are skipped by WHERE.
-  return prisma.$executeRaw(sql);
+  return withWriteRetry("bulkUpsertDiamonds", () => prisma.$executeRaw(sql));
 }
 
 async function bulkUpsertGemstones(input: ParsedGemstone[]): Promise<number> {
@@ -623,7 +690,7 @@ async function bulkUpsertGemstones(input: ParsedGemstone[]): Promise<number> {
     WHERE ${changedPredicate("Gemstone", GEMSTONE_CHANGE_COLUMNS)}
   `;
   // Returns rows actually inserted/updated; unchanged rows are skipped by WHERE.
-  return prisma.$executeRaw(sql);
+  return withWriteRetry("bulkUpsertGemstones", () => prisma.$executeRaw(sql));
 }
 
 async function touchIngestState(key: string, stats: unknown): Promise<void> {
