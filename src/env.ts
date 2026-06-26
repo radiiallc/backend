@@ -57,6 +57,7 @@ export const env = {
   cronSecret: required("CRON_SECRET"),
 
   notificationEmail: optional("RADIIA_NOTIFICATION_EMAIL", "production@radiia.co"),
+  inventoryEmail: optional("RADIIA_INVENTORY_EMAIL", "inventory@radiia.co"),
   ingestAlertThrottleHours: numberOptional("INGEST_ALERT_THROTTLE_HOURS", 6),
 
   // In-process ingest scheduler — replaces the unreliable GitHub Actions cron
