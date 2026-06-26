@@ -292,7 +292,7 @@ export async function sendAccountSettingsChangeEmail(args: {
   if (lines.length === 0) return;
 
   await sendPlainText({
-    to: env.notificationEmail,
+    to: env.inventoryEmail,
     subject: `RADIIA account settings changed: ${args.companyName}`,
     text:
       `Please note that ${args.companyName}'s settings have changed.\n\n` +
