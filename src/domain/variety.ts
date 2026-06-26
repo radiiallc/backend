@@ -45,6 +45,27 @@ export function gemstoneVarietyDisplay(raw: string | null): string | null {
   return mapGemstoneVariety(raw).display;
 }
 
+const VARIETY_ABBREV: Record<string, string> = {
+  Sapphire: "SAP",
+  Ruby: "RUB",
+  Emerald: "EME",
+  Spinel: "SPN",
+  Garnet: "GAR",
+  Beryl: "BRL",
+  Aquamarine: "AQUA",
+  Peridot: "PRD",
+  Morganite: "MGT"
+};
+
+export function gemstoneVarietyAbbrev(raw: string | null): string | null {
+  if (!raw || !raw.trim()) return null;
+  const key = raw.trim().toUpperCase();
+  if (key in GEMSTONE_VARIETY_MAP) {
+    return VARIETY_ABBREV[GEMSTONE_VARIETY_MAP[key].display] ?? key;
+  }
+  return key;
+}
+
 export function gemstoneOriginDisplay(raw: string | null): string | null {
   if (!raw || !raw.trim()) return null;
   return raw.trim();

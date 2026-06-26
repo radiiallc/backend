@@ -195,9 +195,6 @@ export type IngestAlertFile = {
   rowsUpserted: number;
 };
 
-// A7.4 — operational alert sent to the admin when an ingest run fails, delivers
-// no files, or parses zero rows (a silent feed gap). `repeated` is true when the
-// feed has been bad across multiple runs (a throttled reminder, not a new event).
 export async function sendIngestFailureAlert(args: {
   reason: string;
   status: string;
@@ -242,8 +239,6 @@ export async function sendIngestFailureAlert(args: {
   });
 }
 
-// A7.4 — recovery notice once a healthy run lands after one or more bad runs, so
-// the admin knows the feed is back without having to check.
 export async function sendIngestRecoveryAlert(args: {
   rowsUpsertedTotal: number;
   source?: string | null;
@@ -260,10 +255,6 @@ export async function sendIngestRecoveryAlert(args: {
   });
 }
 
-// Notifies production@radiia.co (env.notificationEmail) when an admin changes a
-// client account's credit limit or any of its markups. Only the fields that
-// actually changed are passed in `changes`, and only those lines are rendered —
-// so the email always reflects exactly what was updated.
 export type AccountSettingsChanges = {
   creditLimitUsd?: number;
   labDiamondMarkupPct?: number;
@@ -419,6 +410,9 @@ export async function sendRequestReviewSummaryEmail(args: {
 export type SubmittedRequestItem = {
   sku: string;
   varietyOrName: string;
+  stoneType: string;
+  color?: string | null;
+  clarity?: string | null;
   shape?: string | null;
   weightCt?: number | null;
   totalPriceUsd: number;
@@ -507,6 +501,18 @@ export async function sendRequestSubmittedConfirmation(args: {
   });
 }
 
+function formatSubmittedItemLine(item: SubmittedRequestItem): string {
+  const details = [
+    item.stoneType,
+    item.weightCt ? `${item.weightCt}ct` : null,
+    item.color ?? null,
+    item.clarity ?? null,
+    item.shape ?? null,
+    formatUsd(item.totalPriceUsd)
+  ].filter((p): p is string => Boolean(p));
+  return ` - ${item.sku} · ${details.join(" ")}`;
+}
+
 export async function sendRequestSubmittedAdminNotification(args: {
   buyerEmail: string;
   buyerName: string;
@@ -515,20 +521,12 @@ export async function sendRequestSubmittedAdminNotification(args: {
   type: "MEMO" | "INVOICE";
   items: SubmittedRequestItem[];
   totalUsd: number;
+  note?: string | null;
 }): Promise<void> {
   const typeWord = args.type === "MEMO" ? "memo" : "invoice";
-  const itemLines = args.items
-    .map((item) => {
-      const parts = [
-        item.sku,
-        item.varietyOrName,
-        item.shape ?? null,
-        item.weightCt ? `${item.weightCt}ct` : null,
-        formatUsd(item.totalPriceUsd)
-      ].filter((p): p is string => Boolean(p));
-      return ` - ${parts.join(" · ")}`;
-    })
-    .join("\n");
+  const itemLines = args.items.map(formatSubmittedItemLine).join("\n");
+  const trimmedNote = args.note?.trim();
+  const noteBlock = trimmedNote ? `Note from the client:\n${trimmedNote}\n\n` : "";
   await sendPlainText({
     to: env.notificationEmail,
     subject: `New ${typeWord} request ${args.reference} from ${args.buyerName}`,
@@ -538,6 +536,7 @@ export async function sendRequestSubmittedAdminNotification(args: {
       `Buyer: ${args.buyerName} <${args.buyerEmail}>\n` +
       `Company: ${args.companyName}\n` +
       `Total: ${formatUsd(args.totalUsd)}\n\n` +
+      noteBlock +
       `Items:\n${itemLines}\n\n` +
       `Review at ${env.appUrl}/admin/requests.`
   });

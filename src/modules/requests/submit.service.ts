@@ -1,5 +1,5 @@
 import { Prisma, prisma } from "@/db";
-import { formatRequestReference } from "@/domain";
+import { formatRequestReference, gemstoneVarietyAbbrev } from "@/domain";
 import {
   SubmitRequestBodySchema,
   type SubmitRequestInput,
@@ -145,6 +145,9 @@ export async function submitRequest(
             summaryItems.push({
               sku: gem.sku,
               varietyOrName: gem.varietyRaw ?? gem.sku,
+              stoneType: gemstoneVarietyAbbrev(gem.varietyRaw) ?? "GEM",
+              color: null,
+              clarity: null,
               shape: gem.shapeRaw,
               weightCt: gem.weightCt === null ? null : Number(gem.weightCt),
               totalPriceUsd: lineTotal
@@ -198,6 +201,9 @@ export async function submitRequest(
             summaryItems.push({
               sku: dia.sku,
               varietyOrName: variety,
+              stoneType: isLab ? "Lab" : "Nat",
+              color: dia.fancyColor ?? dia.colorWhite,
+              clarity: dia.clarity,
               shape: dia.shapeMapped ?? dia.shapeRaw,
               weightCt: dia.weightCt === null ? null : Number(dia.weightCt),
               totalPriceUsd: lineTotal
@@ -268,7 +274,8 @@ export async function submitRequest(
         reference,
         type,
         items: result.items,
-        totalUsd: result.totalUsd
+        totalUsd: result.totalUsd,
+        note
       });
     } catch (err) {
       const detail = err instanceof Error ? err.message : "unknown error";
