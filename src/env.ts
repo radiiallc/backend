@@ -65,6 +65,13 @@ export const env = {
   // a sane floor in scheduler.ts so a misconfig can't hammer the FTP feed.
   ingestSchedulerEnabled: resolveSchedulerEnabled(),
   ingestIntervalMinutes: numberOptional("INGEST_INTERVAL_MINUTES", 15),
+
+  // Periodic pg_stat_statements reset (maintenance, see scheduler.ts). Supabase's
+  // metrics scraper walks every query text in pg_stat_statements; when that view
+  // grows large the scrape times out (57014) and burns CPU. The fixed-shape ingest
+  // upserts mean it no longer bloats, but a slow periodic reset is cheap insurance
+  // and auto-clears any pre-existing bloat. 0 disables; default every 24h.
+  pgStatResetHours: numberOptional("PG_STAT_RESET_HOURS", 24),
   resendFromEmail: optional("RESEND_FROM_EMAIL", "RADIIA Portal <onboarding@resend.dev>"),
 
   // Shared secret for the service-to-service /internal API surface (share page,

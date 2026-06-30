@@ -441,9 +441,6 @@ async function setAlertState(data: { alertActive: boolean; lastAlertAt?: Date })
   });
 }
 
-const NOW_SQL = Prisma.sql`NOW()`;
-const TRUE_SQL = Prisma.sql`TRUE`;
-
 function genCuid(): string {
   return `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
 }
@@ -510,55 +507,53 @@ async function bulkUpsertDiamonds(input: ParsedDiamond[]): Promise<number> {
   const rows = dedupeByFeedRowId(input);
   if (rows.length === 0) return 0;
 
-  const tuples = rows.map((r) => {
-    const shapeMapped = mapDiamondShape(r.shapeRaw)?.filter ?? null;
-    const clarityRankValue = clarityRank(r.clarity);
-    return Prisma.sql`(
-    ${genCuid()},
-    ${r.feedRowId},
-    ${r.feedRowIndex},
-    ${r.vendor},
-    ${r.origin},
-    ${r.sku},
-    ${r.shapeRaw},
-    ${shapeMapped},
-    ${r.weightCt},
-    ${r.colorWhite},
-    ${r.fancyColor},
-    ${r.fancyIntensity},
-    ${r.fancyOvertone},
-    ${r.clarity},
-    ${clarityRankValue},
-    ${r.cutGrade},
-    ${r.polish},
-    ${r.symmetry},
-    ${r.fluorescence},
-    ${r.lengthMm},
-    ${r.widthMm},
-    ${r.depthMm},
-    ${r.ratio},
-    ${r.depthPct},
-    ${r.tablePct},
-    ${r.girdle},
-    ${r.culet},
-    ${r.certLab},
-    ${r.certNumber},
-    ${r.certUrl},
-    ${r.treatment},
-    ${r.growthMethod},
-    ${r.basePricePerCtUsd},
-    ${r.basePriceUsd},
-    ${r.state},
-    ${r.country},
-    ${r.photoUrl},
-    ${r.videoUrl},
-    ${Prisma.sql`'{}'::jsonb`},
-    ${NOW_SQL},
-    ${TRUE_SQL},
-    ${NOW_SQL},
-    ${NOW_SQL}
-  )`;
-  });
+  // Serialize the whole chunk as ONE json array parameter and expand it
+  // server-side with jsonb_to_recordset. This keeps the SQL *text* identical no
+  // matter how many rows are in the chunk, so pg_stat_statements records a single
+  // entry for this statement. The old `VALUES (…),(…),…` form produced a fresh
+  // ~413 KB query string per distinct row-count, which bloated pg_stat_statements
+  // to ~900 MB / ~3k entries and made Supabase's periodic metrics scraper time out
+  // (SQLSTATE 57014) — the real cause of the day-over-day CPU climb. See markStale.
+  const payload = rows.map((r) => ({
+    id: genCuid(),
+    feedRowId: r.feedRowId,
+    feedRowIndex: r.feedRowIndex ?? null,
+    vendor: r.vendor,
+    origin: r.origin,
+    sku: r.sku,
+    shapeRaw: r.shapeRaw ?? null,
+    shapeMapped: mapDiamondShape(r.shapeRaw)?.filter ?? null,
+    weightCt: r.weightCt ?? null,
+    colorWhite: r.colorWhite ?? null,
+    fancyColor: r.fancyColor ?? null,
+    fancyIntensity: r.fancyIntensity ?? null,
+    fancyOvertone: r.fancyOvertone ?? null,
+    clarity: r.clarity ?? null,
+    clarityRank: clarityRank(r.clarity) ?? null,
+    cutGrade: r.cutGrade ?? null,
+    polish: r.polish ?? null,
+    symmetry: r.symmetry ?? null,
+    fluorescence: r.fluorescence ?? null,
+    lengthMm: r.lengthMm ?? null,
+    widthMm: r.widthMm ?? null,
+    depthMm: r.depthMm ?? null,
+    ratio: r.ratio ?? null,
+    depthPct: r.depthPct ?? null,
+    tablePct: r.tablePct ?? null,
+    girdle: r.girdle ?? null,
+    culet: r.culet ?? null,
+    certLab: r.certLab ?? null,
+    certNumber: r.certNumber ?? null,
+    certUrl: r.certUrl ?? null,
+    treatment: r.treatment ?? null,
+    growthMethod: r.growthMethod ?? null,
+    basePricePerCtUsd: r.basePricePerCtUsd ?? null,
+    basePriceUsd: r.basePriceUsd ?? null,
+    state: r.state ?? null,
+    country: r.country ?? null,
+    photoUrl: r.photoUrl ?? null,
+    videoUrl: r.videoUrl ?? null
+  }));
 
   const sql = Prisma.sql`
     INSERT INTO "Diamond" (
@@ -570,7 +565,26 @@ async function bulkUpsertDiamonds(input: ParsedDiamond[]): Promise<number> {
       "basePricePerCtUsd","basePriceUsd","state","country","photoUrl","videoUrl",
       "rawFeedRow","lastSeenAt","isAvailable","createdAt","updatedAt"
     )
-    VALUES ${Prisma.join(tuples)}
+    SELECT
+      x."id", x."feedRowId", x."feedRowIndex", x."vendor", x."origin", x."sku",
+      x."shapeRaw", x."shapeMapped", x."weightCt", x."colorWhite", x."fancyColor",
+      x."fancyIntensity", x."fancyOvertone", x."clarity", x."clarityRank", x."cutGrade",
+      x."polish", x."symmetry", x."fluorescence", x."lengthMm", x."widthMm", x."depthMm",
+      x."ratio", x."depthPct", x."tablePct", x."girdle", x."culet", x."certLab",
+      x."certNumber", x."certUrl", x."treatment", x."growthMethod", x."basePricePerCtUsd",
+      x."basePriceUsd", x."state", x."country", x."photoUrl", x."videoUrl",
+      '{}'::jsonb, NOW(), TRUE, NOW(), NOW()
+    FROM jsonb_to_recordset(${JSON.stringify(payload)}::jsonb) AS x(
+      "id" text, "feedRowId" text, "feedRowIndex" int, "vendor" text, "origin" text,
+      "sku" text, "shapeRaw" text, "shapeMapped" text, "weightCt" numeric,
+      "colorWhite" text, "fancyColor" text, "fancyIntensity" text, "fancyOvertone" text,
+      "clarity" text, "clarityRank" int, "cutGrade" text, "polish" text, "symmetry" text,
+      "fluorescence" text, "lengthMm" numeric, "widthMm" numeric, "depthMm" numeric,
+      "ratio" numeric, "depthPct" numeric, "tablePct" numeric, "girdle" text,
+      "culet" text, "certLab" text, "certNumber" text, "certUrl" text, "treatment" text,
+      "growthMethod" text, "basePricePerCtUsd" numeric, "basePriceUsd" numeric,
+      "state" text, "country" text, "photoUrl" text, "videoUrl" text
+    )
     ON CONFLICT ("feedRowId") DO UPDATE SET
       "feedRowIndex" = EXCLUDED."feedRowIndex",
       "vendor" = EXCLUDED."vendor",
@@ -621,37 +635,34 @@ async function bulkUpsertGemstones(input: ParsedGemstone[]): Promise<number> {
   const rows = dedupeByFeedRowId(input);
   if (rows.length === 0) return 0;
 
-  const tuples = rows.map((r) => Prisma.sql`(
-    ${genCuid()},
-    ${r.feedRowId},
-    ${r.feedRowIndex},
-    ${r.sku},
-    ${r.varietyRaw},
-    ${r.shapeRaw},
-    ${r.colorRaw},
-    ${r.weightCt},
-    ${r.lengthMm},
-    ${r.widthMm},
-    ${r.depthMm},
-    ${r.ratio},
-    ${r.basePriceUsd},
-    ${r.basePricePerCtUsd},
-    ${r.certLab},
-    ${r.certNumber},
-    ${r.certUrl},
-    ${r.imageUrl},
-    ${r.image2Url},
-    ${null},
-    ${null},
-    ${r.videoUrl},
-    ${r.origin},
-    ${r.treatment},
-    ${Prisma.sql`'{}'::jsonb`},
-    ${NOW_SQL},
-    ${TRUE_SQL},
-    ${NOW_SQL},
-    ${NOW_SQL}
-  )`);
+  // Same fixed-shape jsonb_to_recordset strategy as bulkUpsertDiamonds — one json
+  // parameter, constant SQL text, single pg_stat_statements entry. image3Url/
+  // image4Url are not fed by the RapNet feed (always NULL on insert), so they are
+  // emitted as constants in the SELECT rather than carried in the json payload.
+  const payload = rows.map((r) => ({
+    id: genCuid(),
+    feedRowId: r.feedRowId,
+    feedRowIndex: r.feedRowIndex ?? null,
+    sku: r.sku,
+    varietyRaw: r.varietyRaw ?? null,
+    shapeRaw: r.shapeRaw ?? null,
+    colorRaw: r.colorRaw ?? null,
+    weightCt: r.weightCt ?? null,
+    lengthMm: r.lengthMm ?? null,
+    widthMm: r.widthMm ?? null,
+    depthMm: r.depthMm ?? null,
+    ratio: r.ratio ?? null,
+    basePriceUsd: r.basePriceUsd ?? null,
+    basePricePerCtUsd: r.basePricePerCtUsd ?? null,
+    certLab: r.certLab ?? null,
+    certNumber: r.certNumber ?? null,
+    certUrl: r.certUrl ?? null,
+    imageUrl: r.imageUrl ?? null,
+    image2Url: r.image2Url ?? null,
+    videoUrl: r.videoUrl ?? null,
+    origin: r.origin ?? null,
+    treatment: r.treatment ?? null
+  }));
 
   const sql = Prisma.sql`
     INSERT INTO "Gemstone" (
@@ -662,7 +673,19 @@ async function bulkUpsertGemstones(input: ParsedGemstone[]): Promise<number> {
       "origin","treatment","rawFeedRow","lastSeenAt","isAvailable",
       "createdAt","updatedAt"
     )
-    VALUES ${Prisma.join(tuples)}
+    SELECT
+      x."id", x."feedRowId", x."feedRowIndex", x."sku", x."varietyRaw", x."shapeRaw",
+      x."colorRaw", x."weightCt", x."lengthMm", x."widthMm", x."depthMm", x."ratio",
+      x."basePriceUsd", x."basePricePerCtUsd", x."certLab", x."certNumber", x."certUrl",
+      x."imageUrl", x."image2Url", NULL::text, NULL::text, x."videoUrl",
+      x."origin", x."treatment", '{}'::jsonb, NOW(), TRUE, NOW(), NOW()
+    FROM jsonb_to_recordset(${JSON.stringify(payload)}::jsonb) AS x(
+      "id" text, "feedRowId" text, "feedRowIndex" int, "sku" text, "varietyRaw" text,
+      "shapeRaw" text, "colorRaw" text, "weightCt" numeric, "lengthMm" numeric,
+      "widthMm" numeric, "depthMm" numeric, "ratio" numeric, "basePriceUsd" numeric,
+      "basePricePerCtUsd" numeric, "certLab" text, "certNumber" text, "certUrl" text,
+      "imageUrl" text, "image2Url" text, "videoUrl" text, "origin" text, "treatment" text
+    )
     ON CONFLICT ("feedRowId") DO UPDATE SET
       "feedRowIndex" = EXCLUDED."feedRowIndex",
       "sku" = EXCLUDED."sku",

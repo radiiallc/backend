@@ -12,6 +12,8 @@
 // harmless; an in-flight guard stops a slow run from overlapping the next tick,
 // and every run is wrapped so a throw can never crash the API server.
 
+import { prisma } from "@/db";
+
 import { env } from "./env";
 import { runUnifiedIngest } from "./integrations/inventory/diamond-ingest";
 
@@ -62,4 +64,45 @@ export function startIngestScheduler(): void {
   setTimeout(() => void tick("startup"), STARTUP_DELAY_MS);
   // Node timers are not GC'd while active; no need to retain the handle.
   setInterval(() => void tick("interval"), intervalMs);
+}
+
+// --- pg_stat_statements maintenance ----------------------------------------
+// Supabase runs an internal scraper that aggregates extensions.pg_stat_statements
+// every few minutes. That view stores the full text of every distinct statement,
+// so if it accumulates many large query strings the scrape walks hundreds of MB,
+// exceeds the statement timeout (SQLSTATE 57014) and drives the daily CPU climb we
+// saw. The fixed-shape ingest upserts keep it from bloating, and this periodic
+// reset both clears any pre-existing bloat and caps growth from any other source —
+// so the operator never has to run pg_stat_statements_reset() by hand again.
+//
+// Defensive by design: the reset needs pg_monitor/superuser, so if the app's DB
+// role lacks the grant (or the extension isn't installed) we log once and move on
+// rather than crash or spam.
+async function resetPgStatStatements(): Promise<void> {
+  try {
+    await prisma.$executeRawUnsafe("SELECT extensions.pg_stat_statements_reset()");
+    // eslint-disable-next-line no-console
+    console.log("[pg-stat-maint] pg_stat_statements reset");
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[pg-stat-maint] reset skipped (needs pg_monitor/superuser or the extension):",
+      err instanceof Error ? err.message : err
+    );
+  }
+}
+
+export function startPgStatStatementsMaintenance(): void {
+  const hours = env.pgStatResetHours;
+  if (!hours || hours <= 0) {
+    // eslint-disable-next-line no-console
+    console.log("[pg-stat-maint] disabled (set PG_STAT_RESET_HOURS>0 to enable)");
+    return;
+  }
+  const intervalMs = hours * 60 * 60_000;
+  // eslint-disable-next-line no-console
+  console.log(`[pg-stat-maint] enabled — resetting pg_stat_statements every ${hours}h`);
+  // Clear pre-existing bloat shortly after boot, then on the interval.
+  setTimeout(() => void resetPgStatStatements(), STARTUP_DELAY_MS);
+  setInterval(() => void resetPgStatStatements(), intervalMs);
 }

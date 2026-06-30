@@ -16,7 +16,7 @@ import { documentsRouter } from "./routes/ims/documents";
 import { clientsRouter, vendorsRouter } from "./routes/ims/parties";
 import { profileRouter } from "./routes/profile";
 import { requestsRouter } from "./routes/requests";
-import { startIngestScheduler } from "./scheduler";
+import { startIngestScheduler, startPgStatStatementsMaintenance } from "./scheduler";
 
 const app = express();
 // CORS with credentials so the browser frontends can set/send the session
@@ -80,6 +80,9 @@ const server = app.listen(env.port, () => {
   // Drive ingest from this always-on server instead of the unreliable GitHub
   // Actions cron (which was dropping ~80% of scheduled runs).
   startIngestScheduler();
+  // Keep pg_stat_statements from bloating Supabase's metrics scraper (the cause of
+  // the climbing CPU); auto-clears any pre-existing bloat on first run.
+  startPgStatStatementsMaintenance();
 });
 
 function shutdown(signal: string) {
