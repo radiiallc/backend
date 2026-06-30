@@ -9,14 +9,18 @@
     "typecheck": "tsc --noEmit",
     "build": "prisma generate",
     "db:generate": "prisma generate",
-    "migrate:deploy": "prisma migrate deploy",
-    "db:migrate:deploy": "dotenv -e .env.local -- prisma migrate deploy",
-    "db:migrate:dev": "dotenv -e .env.local -- prisma migrate dev",
-    "db:studio": "dotenv -e .env.local -- prisma studio",
-    "db:seed": "dotenv -e .env.local -- tsx prisma/seed.ts",
-    "sandbox:migrate:dev": "dotenv -e .env.dev -- prisma migrate dev",
-    "sandbox:seed": "dotenv -e .env.dev -- tsx prisma/seed.ts",
-    "sandbox:studio": "dotenv -e .env.dev -- prisma studio"
+
+    "migrate:dev": "dotenv -e .env.dev -- prisma migrate dev",
+    "migrate:status:dev": "dotenv -e .env.dev -- prisma migrate status",
+    "seed:dev": "dotenv -e .env.dev -- tsx prisma/seed.ts",
+    "studio:dev": "dotenv -e .env.dev -- prisma studio",
+
+    "migrate:prod": "dotenv -e .env.local -- prisma migrate deploy",
+    "migrate:status:prod": "dotenv -e .env.local -- prisma migrate status",
+    "seed:prod": "dotenv -e .env.local -- tsx prisma/seed.ts",
+    "studio:prod": "dotenv -e .env.local -- prisma studio",
+
+    "migrate:deploy": "prisma migrate deploy"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",

@@ -17,7 +17,7 @@ export type SessionUser = {
   id: string;
   email: string;
   name: string;
-  role: "BUYER" | "ADMIN" | "STAFF";
+  role: "BUYER" | "ADMIN";
   companyId: string | null;
 };
 
@@ -44,7 +44,7 @@ export async function verifySession(token: string | undefined): Promise<SessionU
       id: payload.sub,
       email: String(payload.email ?? ""),
       name: String(payload.name ?? ""),
-      role: payload.role === "ADMIN" ? "ADMIN" : payload.role === "STAFF" ? "STAFF" : "BUYER",
+      role: payload.role === "ADMIN" ? "ADMIN" : "BUYER",
       companyId: (payload.companyId as string | null) ?? null
     };
   } catch {
