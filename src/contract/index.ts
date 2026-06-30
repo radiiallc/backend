@@ -5,6 +5,3 @@ export * from "./favorites";
 export * from "./profile";
 export * from "./admin";
 export * from "./internal";
-export * from "./ims";
-export * from "./parties";
-export * from "./documents";
