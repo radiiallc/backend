@@ -10,11 +10,6 @@
     "build": "prisma generate",
     "db:generate": "prisma generate",
 
-    "migrate:dev": "dotenv -e .env.dev -- prisma migrate dev",
-    "migrate:status:dev": "dotenv -e .env.dev -- prisma migrate status",
-    "seed:dev": "dotenv -e .env.dev -- tsx prisma/seed.ts",
-    "studio:dev": "dotenv -e .env.dev -- prisma studio",
-
     "migrate:prod": "dotenv -e .env.local -- prisma migrate deploy",
     "migrate:status:prod": "dotenv -e .env.local -- prisma migrate status",
     "seed:prod": "dotenv -e .env.local -- tsx prisma/seed.ts",
