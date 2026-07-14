@@ -15,7 +15,10 @@
     "seed:prod": "dotenv -e .env.local -- tsx prisma/seed.ts",
     "studio:prod": "dotenv -e .env.local -- prisma studio",
 
-    "migrate:deploy": "prisma migrate deploy"
+    "migrate:deploy": "prisma migrate deploy",
+
+    "skylab:fetch": "dotenv -e .env.local -- tsx scripts/skylab-api.ts fetch",
+    "skylab:reconcile": "dotenv -e .env.local -- tsx scripts/skylab-api.ts reconcile"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",
