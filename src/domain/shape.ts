@@ -43,6 +43,21 @@ const DIAMOND_SHAPE_MAP: Record<string, ShapeEntry> = {
   SQANCU: { display: "Old mine", filter: "Old Mine" },
   SQMOCU: { display: "Modified cushion", filter: "Cushion" },
   TRA: null,
+
+  ROUND: { display: "Round", filter: "Round" },
+  OVAL: { display: "Oval", filter: "Oval" },
+  PEAR: { display: "Pear", filter: "Pear" },
+  MARQUISE: { display: "Marquise", filter: "Marquise" },
+  HEART: { display: "Heart", filter: "Heart" },
+  PRINCESS: { display: "Princess", filter: "Princess" },
+  EMERALD: { display: "Emerald", filter: "Emerald" },
+  ASSCHER: { display: "Asscher", filter: "Asscher" },
+  RADIANT: { display: "Radiant", filter: "Radiant" },
+  CUSHION: { display: "Cushion", filter: "Cushion" },
+  MOVAL: { display: "Moval", filter: "Moval" },
+  "OLD MINE": { display: "Old mine", filter: "Old Mine" },
+  "OLD EURO": { display: "Old euro", filter: "Old euro" },
+  "OLD EUROPEAN": { display: "Old euro", filter: "Old euro" },
 };
 
 const GEMSTONE_SHAPE_MAP: Record<string, ShapeEntry> = {
