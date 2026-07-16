@@ -12,6 +12,8 @@ import {
   type ParsedDiamond,
   type ParsedGemstone
 } from "./rapnet-parser";
+import { fetchSkylabStock } from "./skylab-api";
+import { parseSkylabStock } from "./skylab-adapter";
 
 const BULK_CHUNK = 800;
 
@@ -35,22 +37,10 @@ async function parallelMap<T, R>(
   return results;
 }
 
-// --- Transient write-retry --------------------------------------------------
-// A write can fail mid-run if Postgres is momentarily read-only — e.g. a disk
-// pressure / autoscale-resize event or a failover flips the primary to read-only
-// (SQLSTATE 25006), or the server is briefly not accepting connections
-// (57P03 / 57P01). These windows are usually seconds long. The scheduler already
-// retries the whole run on the next tick, but riding out a short blip *inside* a
-// run avoids a failed run + alert email for a hiccup that clears on its own.
-//
-// This is a backstop for SHORT outages only: total backoff caps at ~15s, so a
-// genuine multi-hour read-only event (e.g. a full disk — the 2026-06-25 incident)
-// still fails the run by design. That failure is what surfaces the real problem,
-// so we deliberately do not try to paper over a sustained outage here.
 const RETRYABLE_PG_CODES = new Set([
-  "25006", // read_only_sql_transaction
-  "57P03", // cannot_connect_now (server starting / not accepting connections)
-  "57P01" // admin_shutdown (connection terminated, e.g. failover)
+  "25006",
+  "57P03",
+  "57P01"
 ]);
 const WRITE_RETRY_MAX_ATTEMPTS = 6; // 1 initial try + 5 retries
 const WRITE_RETRY_BASE_MS = 500;
@@ -60,10 +50,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Returns the matched SQLSTATE if the error is a transient, retryable write
-// failure, else null. Prisma surfaces raw-query failures as a known-request error
-// (code P2010) with the Postgres SQLSTATE in `meta.code`; the code/phrase is also
-// embedded in the message text, so we check both.
 function retryablePgCode(err: unknown): string | null {
   if (err instanceof Prisma.PrismaClientKnownRequestError) {
     const metaCode = typeof err.meta?.code === "string" ? err.meta.code : null;
@@ -73,14 +59,11 @@ function retryablePgCode(err: unknown): string | null {
   for (const code of RETRYABLE_PG_CODES) {
     if (msg.includes(code)) return code;
   }
-  // Phrase fallback for the common case where the numeric code isn't in the text.
   if (/read-only transaction/i.test(msg)) return "25006";
   if (/not accepting connections/i.test(msg)) return "57P03";
   return null;
 }
 
-// Runs a DB write, retrying with exponential backoff + jitter on a transient
-// read-only / unavailable error. Non-transient errors throw immediately.
 async function withWriteRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
   for (let attempt = 1; ; attempt++) {
     try {
@@ -89,7 +72,6 @@ async function withWriteRetry<T>(label: string, fn: () => Promise<T>): Promise<T
       const code = retryablePgCode(err);
       if (!code || attempt >= WRITE_RETRY_MAX_ATTEMPTS) throw err;
       const backoff = Math.min(WRITE_RETRY_CAP_MS, WRITE_RETRY_BASE_MS * 2 ** (attempt - 1));
-      // Jitter avoids a thundering herd across the parallel upsert chunks.
       const delay = backoff + Math.floor(Math.random() * 250);
       console.warn(
         `[ingest] write "${label}" hit transient ${code}; ` +
@@ -134,6 +116,7 @@ export async function runUnifiedIngest(): Promise<IngestOutcome> {
 
   try {
     const { source, files } = await listIngestFiles();
+    const skylabApiMode = env.skylabSource === "api";
 
     if (files.length === 0) {
       await touchIngestState("ingest", { errorText: null, source, files: [] });
@@ -158,6 +141,11 @@ export async function runUnifiedIngest(): Promise<IngestOutcome> {
         const target = detectFileTarget(file.name);
         if (!target) {
           skippedFiles.push({ name: file.name, reason: "unknown-filename-pattern" });
+          return null;
+        }
+
+        if (skylabApiMode && target.kind === "diamond" && target.vendor === "Skylab") {
+          skippedFiles.push({ name: file.name, reason: "skylab-ftp-suppressed (SKYLAB_SOURCE=api)" });
           return null;
         }
 
@@ -216,9 +204,6 @@ export async function runUnifiedIngest(): Promise<IngestOutcome> {
           ? `${target.vendor} (${target.origin})`
           : "Gemstone";
 
-        // Per-feed upload signal: dl.mtime is the feed file's modify-time on the
-        // FTP (i.e. when the vendor last pushed it), which is what the dashboard
-        // shows so the team can spot a feed that has stopped updating.
         const feed = feedIdentityForTarget(target);
 
         return {
@@ -240,8 +225,10 @@ export async function runUnifiedIngest(): Promise<IngestOutcome> {
       })
     );
 
+    const apiEntry = skylabApiMode ? await ingestSkylabApiEntry() : null;
+
     const feedsSeen = new Map<string, { label: string; mtime: Date; rowsParsed: number }>();
-    for (const f of perFile) {
+    for (const f of [...perFile, apiEntry]) {
       if (!f) continue;
       fileResults.push(f.result);
       upsertTotal += f.upsertCount;
@@ -256,10 +243,6 @@ export async function runUnifiedIngest(): Promise<IngestOutcome> {
       }
     }
 
-    // Persist this run's per-feed upload timestamps. Only feeds present in this
-    // run are touched, so a feed whose file stopped arriving keeps its last-seen
-    // timestamp and shows as stale on the dashboard. Best-effort: bookkeeping
-    // here must never fail the ingest itself.
     await recordFeedStatuses(feedsSeen);
 
     const diamondsStale = seenDiamondIds.size > 0
@@ -305,13 +288,71 @@ export async function runUnifiedIngest(): Promise<IngestOutcome> {
   }
 }
 
-// How many recent runs to retain in the IngestRun history table (A7.5). At the
-// hourly cron cadence this is ~8 days; the table stays tiny.
+type IngestEntry = {
+  result: PerFileResult;
+  feed: { key: string; label: string; mtime: Date; rowsParsed: number };
+  diamondRows: ParsedDiamond[];
+  gemstoneRows: ParsedGemstone[];
+  upsertCount: number;
+};
+
+async function ingestSkylabApiEntry(): Promise<IngestEntry> {
+  const tFetch = Date.now();
+  const { stones, count } = await fetchSkylabStock();
+  const fetchMs = Date.now() - tFetch;
+
+  const tParse = Date.now();
+  const parsed = parseSkylabStock(stones);
+  const parseMs = Date.now() - tParse;
+
+  let excludedShapeCount = 0;
+  const diamondRows = parsed.rows.filter((r) => {
+    if (isExcludedShape(r.shapeRaw)) {
+      excludedShapeCount++;
+      return false;
+    }
+    return true;
+  });
+  if (excludedShapeCount > 0) {
+    parsed.rejected.push({ reason: "excluded-shape", count: excludedShapeCount });
+  }
+
+  if (diamondRows.length === 0) {
+    throw new Error(
+      `Skylab API returned ${stones.length} stones (count=${count ?? "?"}) but 0 ingestable rows. ` +
+        "Aborting the run to avoid mass-flipping Skylab availability (Gate §5)."
+    );
+  }
+
+  const tUp = Date.now();
+  const chunks: ParsedDiamond[][] = [];
+  for (let i = 0; i < diamondRows.length; i += BULK_CHUNK) {
+    chunks.push(diamondRows.slice(i, i + BULK_CHUNK));
+  }
+  const counts = await parallelMap(chunks, PARALLEL_CHUNKS_PER_FILE, bulkUpsertDiamonds);
+  const upsertCount = counts.reduce((a, b) => a + b, 0);
+  const upsertMs = Date.now() - tUp;
+
+  return {
+    result: {
+      name: "Skylab API",
+      target: "Skylab (Lab)",
+      rowsParsed: parsed.rows.length,
+      rowsUpserted: upsertCount,
+      rejected: parsed.rejected,
+      fetchMs,
+      parseMs,
+      upsertMs
+    },
+    feed: { key: "skylab", label: "Skylab", mtime: new Date(), rowsParsed: parsed.rows.length },
+    diamondRows,
+    gemstoneRows: [],
+    upsertCount
+  };
+}
+
 const RUN_HISTORY_KEEP = 200;
 
-// Records the run in the structured history and evaluates alerting. Both steps
-// are best-effort: a logging/alerting failure must never fail the ingest itself
-// or change its outcome, so each is wrapped and the original outcome is returned.
 async function finalizeRun(outcome: IngestOutcome): Promise<IngestOutcome> {
   const rowsParsedTotal = outcome.files.reduce((sum, f) => sum + f.rowsParsed, 0);
 
@@ -358,12 +399,6 @@ async function pruneRunHistory(): Promise<void> {
   }
 }
 
-// Decides whether this run is alert-worthy. A run is "bad" when it errors,
-// delivers no files, or parses zero rows overall (a silent feed gap). A partial
-// gap — some files present but individual feed files empty — is also surfaced,
-// since one broken feed among several would otherwise go unnoticed. Note: zero
-// *upserts* is NOT an alert — the change-detection skip means an unchanged feed
-// legitimately upserts 0 rows.
 function classifyOutcome(
   outcome: IngestOutcome,
   rowsParsedTotal: number
@@ -451,15 +486,6 @@ function dedupeByFeedRowId<T extends { feedRowId: string }>(rows: T[]): T[] {
   return Array.from(map.values());
 }
 
-// Columns compared (via IS DISTINCT FROM EXCLUDED) to decide whether an existing
-// row actually changed. When none differ, the ON CONFLICT DO UPDATE is skipped
-// for that row — no new tuple, no index churn, no WAL — so the hourly ingest no
-// longer rewrites ~10k unchanged rows every run (the main Disk IO drain on a
-// small Postgres instance). `isAvailable` is included so rows that went stale and
-// then reappear in the feed are reactivated (EXCLUDED."isAvailable" is always TRUE).
-// `lastSeenAt`/`updatedAt` are intentionally excluded — they are always NOW(), so
-// comparing them would defeat the skip. Staleness is tracked from the in-memory
-// seen-id set (see markStale), not from lastSeenAt, so leaving it stale is safe.
 const DIAMOND_CHANGE_COLUMNS = [
   "feedRowIndex", "vendor", "origin", "sku", "shapeRaw", "shapeMapped", "weightCt",
   "colorWhite", "fancyColor", "fancyIntensity", "fancyOvertone", "clarity", "clarityRank",
@@ -475,8 +501,6 @@ const GEMSTONE_CHANGE_COLUMNS = [
   "certNumber", "certUrl", "imageUrl", "image2Url", "videoUrl", "origin", "treatment", "isAvailable"
 ];
 
-// Builds `"<table>"."col" IS DISTINCT FROM EXCLUDED."col" OR ...` for the upsert
-// WHERE clause. NULL-safe (IS DISTINCT FROM treats NULLs correctly).
 function changedPredicate(table: string, columns: string[]): Prisma.Sql {
   return Prisma.join(
     columns.map(
@@ -487,9 +511,6 @@ function changedPredicate(table: string, columns: string[]): Prisma.Sql {
   );
 }
 
-// Marks rows not present in this run's feed as unavailable. Uses `<> ALL($1)`
-// (a single array bind) instead of Prisma's `notIn`, which expands to a
-// `NOT IN ($1,$2,…,$10000)` literal list that is expensive to plan and ship.
 async function markStale(table: "Diamond" | "Gemstone", seenIds: string[]): Promise<number> {
   const tbl = Prisma.raw(`"${table}"`);
   const affected = await withWriteRetry("markStale", () =>
@@ -507,13 +528,6 @@ async function bulkUpsertDiamonds(input: ParsedDiamond[]): Promise<number> {
   const rows = dedupeByFeedRowId(input);
   if (rows.length === 0) return 0;
 
-  // Serialize the whole chunk as ONE json array parameter and expand it
-  // server-side with jsonb_to_recordset. This keeps the SQL *text* identical no
-  // matter how many rows are in the chunk, so pg_stat_statements records a single
-  // entry for this statement. The old `VALUES (…),(…),…` form produced a fresh
-  // ~413 KB query string per distinct row-count, which bloated pg_stat_statements
-  // to ~900 MB / ~3k entries and made Supabase's periodic metrics scraper time out
-  // (SQLSTATE 57014) — the real cause of the day-over-day CPU climb. See markStale.
   const payload = rows.map((r) => ({
     id: genCuid(),
     feedRowId: r.feedRowId,
@@ -627,7 +641,6 @@ async function bulkUpsertDiamonds(input: ParsedDiamond[]): Promise<number> {
       "updatedAt" = NOW()
     WHERE ${changedPredicate("Diamond", DIAMOND_CHANGE_COLUMNS)}
   `;
-  // Returns rows actually inserted/updated; unchanged rows are skipped by WHERE.
   return withWriteRetry("bulkUpsertDiamonds", () => prisma.$executeRaw(sql));
 }
 
@@ -635,10 +648,6 @@ async function bulkUpsertGemstones(input: ParsedGemstone[]): Promise<number> {
   const rows = dedupeByFeedRowId(input);
   if (rows.length === 0) return 0;
 
-  // Same fixed-shape jsonb_to_recordset strategy as bulkUpsertDiamonds — one json
-  // parameter, constant SQL text, single pg_stat_statements entry. image3Url/
-  // image4Url are not fed by the RapNet feed (always NULL on insert), so they are
-  // emitted as constants in the SELECT rather than carried in the json payload.
   const payload = rows.map((r) => ({
     id: genCuid(),
     feedRowId: r.feedRowId,
@@ -712,7 +721,6 @@ async function bulkUpsertGemstones(input: ParsedGemstone[]): Promise<number> {
       "updatedAt" = NOW()
     WHERE ${changedPredicate("Gemstone", GEMSTONE_CHANGE_COLUMNS)}
   `;
-  // Returns rows actually inserted/updated; unchanged rows are skipped by WHERE.
   return withWriteRetry("bulkUpsertGemstones", () => prisma.$executeRaw(sql));
 }
 
@@ -730,11 +738,6 @@ async function touchIngestState(key: string, stats: unknown): Promise<void> {
   });
 }
 
-// Per-feed ingest status lives in dedicated IngestState rows keyed "feed:<key>"
-// (e.g. "feed:skylab"), distinct from the main "ingest" row. `lastFeedMtime`
-// holds the feed file's upload time and `lastRunStats` carries the display label
-// + parsed-row count. Best-effort: a failure here is logged and swallowed so it
-// never affects the ingest outcome.
 async function recordFeedStatuses(
   feeds: Map<string, { label: string; mtime: Date; rowsParsed: number }>
 ): Promise<void> {
