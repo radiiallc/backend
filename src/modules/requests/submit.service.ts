@@ -102,6 +102,11 @@ export async function submitRequest(
         let totalUsd = 0;
 
         for (const ci of selectedItems) {
+          // Every catalog item is a unique, one-of-a-kind stone (see
+          // cart.service.ts), so a request line is always qty 1. Ignore any
+          // legacy qty > 1 a cart line may still carry from before the fix, so a
+          // stale cart cannot submit a line total that is double its true value.
+          const qty = 1;
           if (ci.gemstone) {
             const gem = ci.gemstone;
             const basePriceUsd = gem.basePriceUsd === null ? null : Number(gem.basePriceUsd);
@@ -111,7 +116,7 @@ export async function submitRequest(
               basePricePerCtUsd === null ? null : Math.round(basePricePerCtUsd * gemFactor * 100) / 100;
             const unitPrice =
               basePriceUsd === null ? 0 : Math.round(basePriceUsd * gemFactor * 100) / 100;
-            const lineTotal = Math.round(unitPrice * ci.qty * 100) / 100;
+            const lineTotal = Math.round(unitPrice * qty * 100) / 100;
             totalUsd += lineTotal;
 
             requestItemRows.push({
@@ -124,7 +129,7 @@ export async function submitRequest(
                 category: "gemstone",
                 vendor: "RADIIA",
                 markupPct: gemMarkupPct,
-                qty: ci.qty,
+                qty,
                 gemstoneId: gem.id,
                 sku: gem.sku,
                 varietyRaw: gem.varietyRaw,
@@ -164,7 +169,7 @@ export async function submitRequest(
               basePricePerCtUsd === null ? null : Math.round(basePricePerCtUsd * factor * 100) / 100;
             const unitPrice =
               basePriceUsd === null ? 0 : Math.round(basePriceUsd * factor * 100) / 100;
-            const lineTotal = Math.round(unitPrice * ci.qty * 100) / 100;
+            const lineTotal = Math.round(unitPrice * qty * 100) / 100;
             totalUsd += lineTotal;
             const variety = isLab ? "Lab Diamond" : "Natural Diamond";
 
@@ -178,7 +183,7 @@ export async function submitRequest(
                 category: "diamond",
                 vendor: dia.vendor,
                 markupPct,
-                qty: ci.qty,
+                qty,
                 diamondId: dia.id,
                 sku: dia.sku,
                 varietyRaw: variety,
