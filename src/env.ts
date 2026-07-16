@@ -104,6 +104,32 @@ export const env = {
   gemstoneFtpPath: optional("GEMSTONE_FTP_PATH", ""),
   ingestFtpDir: optional("INGEST_FTP_DIR", "/upload"),
 
+  // --- Skylab direct API (FTP→API migration, WORKPLAN §1.6) ---------------
+  // Skylab (lab diamonds) is leaving Fantasy, so its Fantasy-hosted FTP feed
+  // will die; we move it onto Skylab's own pull API. `skylabSource` selects the
+  // Skylab ingest source. DEFAULT "ftp" — the API path is dormant until a run is
+  // deliberately cut over, so shipping this never changes prod behavior. Set to
+  // "api" only after the reconcile report (scripts/skylab-api.ts reconcile) looks
+  // clean. Disons + Gemstones are unaffected either way — only Skylab moves.
+  skylabSource: (optional("SKYLAB_SOURCE", "ftp").toLowerCase() === "api"
+    ? "api"
+    : "ftp") as "ftp" | "api",
+  skylabApiUrl: optional("SKYLAB_API_URL", "https://jwlapi.itemlinkshare.com").replace(/\/+$/, ""),
+  skylabApiPath: optional("SKYLAB_API_PATH", "/users/radiia-list"),
+  // Provided by Skylab (Jignesh). Empty => the API fetch fails loud rather than
+  // silently ingesting nothing; server-only, never exposed to a browser.
+  skylabApiKey: optional("SKYLAB_API_KEY", ""),
+  skylabApiTimeoutMs: numberOptional("SKYLAB_API_TIMEOUT_MS", 30_000),
+  // lot_status values the API uses for a live/orderable stone. Everything else
+  // (on-memo / on-hold / sold) is treated as unavailable and swept — this is the
+  // whole point of the migration (the FTP feed had no such signal). Comma-
+  // separated, case-insensitive. Confirm the full vocabulary with Skylab; the
+  // fetch/reconcile script prints the observed distribution so it can be verified.
+  skylabAvailableStatuses: optional("SKYLAB_AVAILABLE_STATUSES", "STOCK")
+    .split(",")
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean),
+
   sherryFeedToken: optional("SHERRY_FEED_TOKEN", ""),
   sherryFeedNaturalMarkupPct: numberOptional("SHERRY_FEED_NATURAL_MARKUP_PCT", 5),
   sherryFeedLabMarkupPct: numberOptional("SHERRY_FEED_LAB_MARKUP_PCT", 15)
