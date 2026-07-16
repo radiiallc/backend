@@ -77,10 +77,9 @@ async function resolveCartItem(
 export async function addToCart(
   userId: string,
   itemId: string,
-  qty = 1
+  _qty = 1
 ): Promise<CartActionResult> {
   if (!itemId) return { ok: false, error: "Missing item id" };
-  const quantity = Math.max(1, Math.floor(qty));
 
   const resolved = await resolveCartItem(itemId);
   if (!resolved) return { ok: false, error: "Item not found" };
@@ -88,17 +87,24 @@ export async function addToCart(
 
   const cartId = await ensureCartId(userId);
 
+  // Every catalog item is a unique, one-of-a-kind stone (parcels are rejected at
+  // ingest), so a cart line is ALWAYS qty 1 — there is no second copy to add.
+  // Re-adding a stone that is already in the cart is therefore a no-op, not a
+  // quantity increment. Incrementing here silently doubled a line's total while
+  // leaving its per-carat price untouched (the per-carat is computed
+  // qty-independently everywhere), so a re-added stone showed 2x its true total
+  // on the submitted request.
   if (resolved.kind === "gemstone") {
     await prisma.cartItem.upsert({
       where: { cartId_gemstoneId: { cartId, gemstoneId: itemId } },
-      create: { cartId, gemstoneId: itemId, qty: quantity },
-      update: { qty: { increment: quantity } }
+      create: { cartId, gemstoneId: itemId, qty: 1 },
+      update: {}
     });
   } else {
     await prisma.cartItem.upsert({
       where: { cartId_diamondId: { cartId, diamondId: itemId } },
-      create: { cartId, diamondId: itemId, qty: quantity },
-      update: { qty: { increment: quantity } }
+      create: { cartId, diamondId: itemId, qty: 1 },
+      update: {}
     });
   }
 
@@ -142,9 +148,11 @@ export async function updateCartItemQty(
     return { ok: false, error: "Item not found" };
   }
 
+  // Unique stones only: a cart line is always qty 1, so ignore any requested
+  // value > 1 rather than let it through and double the line total downstream.
   await prisma.cartItem.update({
     where: { id: cartItemId },
-    data: { qty: quantity }
+    data: { qty: 1 }
   });
   return { ok: true };
 }
