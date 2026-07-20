@@ -129,6 +129,10 @@ export const env = {
     .split(",")
     .map((s) => s.trim().toUpperCase())
     .filter(Boolean),
+  // Abort an api-mode Skylab run if usable rows fall below this fraction of the
+  // count currently available in the DB — partial-batch protection (Gate §5).
+  // 0.5 = tolerate up to a 50% drop in one cycle; lower if the book is volatile.
+  skylabMinRowsFraction: numberOptional("SKYLAB_MIN_ROWS_FRACTION", 0.5),
 
   sherryFeedToken: optional("SHERRY_FEED_TOKEN", ""),
   sherryFeedNaturalMarkupPct: numberOptional("SHERRY_FEED_NATURAL_MARKUP_PCT", 5),
