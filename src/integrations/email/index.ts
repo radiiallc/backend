@@ -6,7 +6,7 @@ const resend = new Resend(env.resendApiKey);
 
 const FROM_ADDRESS = env.resendFromEmail;
 
-type SendArgs = { to: string; subject: string; text: string; html?: string };
+type SendArgs = { to: string | string[]; subject: string; text: string; html?: string };
 
 export class EmailSendError extends Error {
   constructor(message: string, public readonly detail?: unknown) {
@@ -527,8 +527,14 @@ export async function sendRequestSubmittedAdminNotification(args: {
   const itemLines = args.items.map(formatSubmittedItemLine).join("\n");
   const trimmedNote = args.note?.trim();
   const noteBlock = trimmedNote ? `Note from the client:\n${trimmedNote}\n\n` : "";
+  // Admin memo/invoice request notifications go to BOTH the production inbox and
+  // the inventory inbox. Dedupe so a shared config value can't double-send, and
+  // drop any empty address so a blank env var can't send to "".
+  const recipients = Array.from(
+    new Set([env.notificationEmail, env.inventoryEmail].filter(Boolean))
+  );
   await sendPlainText({
-    to: env.notificationEmail,
+    to: recipients,
     subject: `New ${typeWord} request ${args.reference} from ${args.buyerName}`,
     text:
       `A new ${typeWord} request is awaiting review on the RADIIA portal.\n\n` +
