@@ -1,8 +1,10 @@
 import { Router, type Request, type Response } from "express";
 
-import { ImsInventoryQuerySchema } from "@/contract";
+import { ImsCreateDocumentSchema, ImsDocumentQuerySchema, ImsInventoryQuerySchema } from "@/contract";
 
 import { requireAdmin } from "../middleware/auth";
+import { getDocumentByIdFromDb, listDocumentsFromDb } from "../modules/ims/documents.reads";
+import { createOutboundDocument } from "../modules/ims/documents.service";
 import {
   getInventoryItemByIdFromDb,
   getVendorByIdFromDb,
@@ -74,5 +76,50 @@ imsRouter.get(
   wrap(async (req, res) => {
     const kind = typeof req.query.kind === "string" ? req.query.kind : undefined;
     res.json(await listVocabularyFromDb(kind));
+  })
+);
+
+// ── Documents ─────────────────────────────────────────────────────────────────
+imsRouter.get(
+  "/documents",
+  wrap(async (req, res) => {
+    const parsed = ImsDocumentQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid query params" });
+      return;
+    }
+    res.json(await listDocumentsFromDb(parsed.data));
+  })
+);
+
+imsRouter.get(
+  "/documents/:id",
+  wrap(async (req, res) => {
+    const doc = await getDocumentByIdFromDb(req.params.id);
+    if (!doc) {
+      res.status(404).json({ error: "Document not found" });
+      return;
+    }
+    res.json(doc);
+  })
+);
+
+// Create an outbound Memo Out / Invoice from existing inventory, transitioning
+// each line's item (ON_MEMO / SOLD) and minting the document number. The
+// creating admin comes from the session (requireAdmin guarantees req.user).
+imsRouter.post(
+  "/documents",
+  wrap(async (req, res) => {
+    const parsed = ImsCreateDocumentSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid document payload" });
+      return;
+    }
+    const result = await createOutboundDocument(parsed.data, req.user!.id);
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.status(201).json(result.document);
   })
 );

@@ -207,3 +207,103 @@ export const ImsInventoryQuerySchema = z.object({
   visible: z.enum(["true", "false"]).optional()
 });
 export type ImsInventoryQuery = z.infer<typeof ImsInventoryQuerySchema>;
+
+// ── Documents ────────────────────────────────────────────────────────────────
+// Back-office inbound/outbound docs. Direction, party kind, party name, line
+// count and total are all DERIVED on read (never stored) — see
+// admin-schema-reconciliation.md §Document.
+
+export const DocumentTypeSchema = z.enum([
+  "BILL_IN",
+  "MEMO_IN",
+  "BRAND_INVENTORY_IN",
+  "MEMO_OUT",
+  "INVOICE",
+  "PURCHASE_ORDER",
+  "RETURN_MEMO_OUT",
+  "RETURN_MEMO_IN",
+  "BRAND_INVENTORY_OUT"
+]);
+export type DocumentType = z.infer<typeof DocumentTypeSchema>;
+
+export const DocumentStatusSchema = z.enum(["OPEN", "CLOSED", "EXPORTED", "BILLED", "VOID"]);
+export type DocumentStatus = z.infer<typeof DocumentStatusSchema>;
+
+export const LineStatusSchema = z.enum(["IN_STOCK", "ON_MEMO", "SOLD", "RETURNED"]);
+export type LineStatus = z.infer<typeof LineStatusSchema>;
+
+export const CloseReasonSchema = z.enum(["RETURNED", "SOLD", "MIXED"]);
+export type CloseReason = z.infer<typeof CloseReasonSchema>;
+
+export const DocDirectionSchema = z.enum(["in", "out"]);
+export type DocDirection = z.infer<typeof DocDirectionSchema>;
+
+export const PartyKindSchema = z.enum(["vendor", "client"]);
+export type PartyKind = z.infer<typeof PartyKindSchema>;
+
+export const ImsDocumentLineItemSchema = z.object({
+  id: z.string(),
+  inventoryItemId: z.string(),
+  itemSku: z.string(),
+  itemName: z.string().nullable(),
+  lineStatus: LineStatusSchema,
+  resolvedByDocumentId: z.string().nullable(),
+  resolvedByDocumentNumber: z.string().nullable(),
+  quantity: z.number().nullable(),
+  caratWeight: z.number().nullable(),
+  unitPrice: z.number().nullable(),
+  totalPrice: z.number().nullable(),
+  discountAmount: z.number().nullable(),
+  clientReference: z.string().nullable(),
+  notes: z.string().nullable()
+});
+export type ImsDocumentLineItem = z.infer<typeof ImsDocumentLineItemSchema>;
+
+export const ImsDocumentSchema = z.object({
+  id: z.string(),
+  type: DocumentTypeSchema,
+  documentNumber: z.string().nullable(),
+  externalReference: z.string().nullable(),
+  status: DocumentStatusSchema,
+  direction: DocDirectionSchema,
+  partyKind: PartyKindSchema.nullable(),
+  vendorId: z.string().nullable(),
+  clientId: z.string().nullable(),
+  partyName: z.string().nullable(),
+  issueDate: z.string(),
+  dueDate: z.string().nullable(),
+  discountAmount: z.number().nullable(),
+  notes: z.string().nullable(),
+  emailedAt: z.string().nullable(),
+  quickbooksSyncedAt: z.string().nullable(),
+  closeReason: CloseReasonSchema.nullable(),
+  parentDocumentId: z.string().nullable(),
+  parentDocumentNumber: z.string().nullable(),
+  createdById: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  lineCount: z.number(),
+  total: z.number().nullable(),
+  lineItems: z.array(ImsDocumentLineItemSchema)
+});
+export type ImsDocument = z.infer<typeof ImsDocumentSchema>;
+
+export const ImsDocumentQuerySchema = z.object({
+  type: DocumentTypeSchema.optional(),
+  status: DocumentStatusSchema.optional(),
+  direction: DocDirectionSchema.optional()
+});
+export type ImsDocumentQuery = z.infer<typeof ImsDocumentQuerySchema>;
+
+// Create an outbound document that draws down existing inventory. This first
+// write slice covers the two types that transition item status: MEMO_OUT
+// (items -> ON_MEMO) and INVOICE (items -> SOLD). PO / inbound / returns land in
+// later slices.
+export const ImsCreateDocumentSchema = z.object({
+  type: z.enum(["MEMO_OUT", "INVOICE"]),
+  clientId: z.string().min(1),
+  inventoryItemIds: z.array(z.string().min(1)).min(1),
+  discountAmount: z.number().nonnegative().optional(),
+  notes: z.string().optional()
+});
+export type ImsCreateDocument = z.infer<typeof ImsCreateDocumentSchema>;
