@@ -179,3 +179,81 @@ export async function updateInventoryItem(
   });
   return { ok: true, item: prismaItemToDto(updated) };
 }
+
+async function loadItemDto(id: string): Promise<ImsInventoryItem> {
+  const item = await prisma.inventoryItem.findUniqueOrThrow({
+    where: { id },
+    include: IMS_ITEM_INCLUDE
+  });
+  return prismaItemToDto(item);
+}
+
+// Reserve an in-stock item as a hold for a client (admin reserve/hold). This is
+// the one non-document status transition, so it still writes an
+// ItemStatusHistory audit row (with no documentId). A held stone is pulled from
+// the portal. Only an IN_STOCK item can be newly reserved.
+export async function reserveItem(
+  id: string,
+  clientId: string,
+  changedById: string
+): Promise<UpdateItemResult> {
+  const item = await prisma.inventoryItem.findUnique({ where: { id }, select: { status: true } });
+  if (!item) return { ok: false, error: "Inventory item not found" };
+  if (item.status !== "IN_STOCK") {
+    return { ok: false, error: `Only an in-stock item can be reserved (currently ${item.status})` };
+  }
+  const client = await prisma.company.findUnique({
+    where: { id: clientId },
+    select: { clientStatus: true }
+  });
+  if (!client) return { ok: false, error: "Client not found" };
+  if (client.clientStatus !== "ACTIVE") return { ok: false, error: "Client is not active" };
+
+  await prisma.$transaction(async (tx) => {
+    await tx.inventoryItem.update({
+      where: { id },
+      data: {
+        status: "RESERVED",
+        reservedForClientId: clientId,
+        reservedAt: new Date(),
+        visibleOnPortal: false
+      }
+    });
+    await tx.itemStatusHistory.create({
+      data: {
+        inventoryItemId: id,
+        previousStatus: "IN_STOCK",
+        newStatus: "RESERVED",
+        changedById
+      }
+    });
+  });
+  return { ok: true, item: await loadItemDto(id) };
+}
+
+// Release a held item back to stock (admin release). Clears the hold + audits
+// it. visibleOnPortal is left as-is (staff re-list deliberately, mirroring a
+// memo return). Only a RESERVED item can be released.
+export async function releaseItem(id: string, changedById: string): Promise<UpdateItemResult> {
+  const item = await prisma.inventoryItem.findUnique({ where: { id }, select: { status: true } });
+  if (!item) return { ok: false, error: "Inventory item not found" };
+  if (item.status !== "RESERVED") {
+    return { ok: false, error: `Only a reserved item can be released (currently ${item.status})` };
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.inventoryItem.update({
+      where: { id },
+      data: { status: "IN_STOCK", reservedForClientId: null, reservedAt: null }
+    });
+    await tx.itemStatusHistory.create({
+      data: {
+        inventoryItemId: id,
+        previousStatus: "RESERVED",
+        newStatus: "IN_STOCK",
+        changedById
+      }
+    });
+  });
+  return { ok: true, item: await loadItemDto(id) };
+}

@@ -341,6 +341,19 @@ export const ImsUpdateInventoryItemSchema = z.object({
 });
 export type ImsUpdateInventoryItem = z.infer<typeof ImsUpdateInventoryItemSchema>;
 
+// Reserve a hold on an in-stock item for a client (admin reserve/hold). Release
+// takes no body. This is the ONE non-document status move (IN_STOCK ↔ RESERVED).
+export const ImsReserveItemSchema = z.object({ clientId: z.string().min(1) });
+export type ImsReserveItem = z.infer<typeof ImsReserveItemSchema>;
+
+// Add (or reuse) a self-growing vocabulary value (admin pick-or-add). Dedups
+// case-insensitively within a kind; `kind` is one of the shared VOCAB_KINDS.
+export const ImsCreateVocabularySchema = z.object({
+  kind: z.enum(VOCAB_KINDS),
+  value: z.string().trim().min(1)
+});
+export type ImsCreateVocabulary = z.infer<typeof ImsCreateVocabularySchema>;
+
 // ── Documents ────────────────────────────────────────────────────────────────
 // Back-office inbound/outbound docs. Direction, party kind, party name, line
 // count and total are all DERIVED on read (never stored) — see

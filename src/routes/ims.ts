@@ -3,10 +3,12 @@ import { Router, type Request, type Response } from "express";
 import {
   ImsCreateDocumentSchema,
   ImsCreateInventoryItemSchema,
+  ImsCreateVocabularySchema,
   ImsDocumentIdsSchema,
   ImsDocumentQuerySchema,
   ImsInventoryQuerySchema,
   ImsRecordReturnSchema,
+  ImsReserveItemSchema,
   ImsUpdateInventoryItemSchema
 } from "@/contract";
 
@@ -18,7 +20,12 @@ import {
   quickbooksSyncDocuments,
   recordMemoReturn
 } from "../modules/ims/documents.service";
-import { createInventoryItem, updateInventoryItem } from "../modules/ims/inventory.service";
+import {
+  createInventoryItem,
+  releaseItem,
+  reserveItem,
+  updateInventoryItem
+} from "../modules/ims/inventory.service";
 import {
   getInventoryItemByIdFromDb,
   getVendorByIdFromDb,
@@ -26,6 +33,7 @@ import {
   listVendorsFromDb,
   listVocabularyFromDb
 } from "../modules/ims/reads";
+import { addVocabularyValue } from "../modules/ims/vocabulary.service";
 
 export const imsRouter = Router();
 
@@ -109,6 +117,39 @@ imsRouter.patch(
   })
 );
 
+// Reserve an in-stock item as a hold for a client; release clears the hold. The
+// one non-document status move (IN_STOCK ↔ RESERVED), each audited.
+imsRouter.post(
+  "/inventory/:id/reserve",
+  wrap(async (req, res) => {
+    const parsed = ImsReserveItemSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid reserve payload" });
+      return;
+    }
+    const result = await reserveItem(req.params.id, parsed.data.clientId, req.user!.id);
+    if (!result.ok) {
+      const code = result.error === "Inventory item not found" ? 404 : 400;
+      res.status(code).json({ error: result.error });
+      return;
+    }
+    res.json(result.item);
+  })
+);
+
+imsRouter.post(
+  "/inventory/:id/release",
+  wrap(async (req, res) => {
+    const result = await releaseItem(req.params.id, req.user!.id);
+    if (!result.ok) {
+      const code = result.error === "Inventory item not found" ? 404 : 400;
+      res.status(code).json({ error: result.error });
+      return;
+    }
+    res.json(result.item);
+  })
+);
+
 // ── Vendors ───────────────────────────────────────────────────────────────────
 imsRouter.get("/vendors", wrap(async (_req, res) => res.json(await listVendorsFromDb())));
 
@@ -130,6 +171,21 @@ imsRouter.get(
   wrap(async (req, res) => {
     const kind = typeof req.query.kind === "string" ? req.query.kind : undefined;
     res.json(await listVocabularyFromDb(kind));
+  })
+);
+
+// Add (or reuse) a value in a self-growing list. 201 on a fresh insert, 200 when
+// an existing value (case-insensitive) is reused (admin pick-or-add).
+imsRouter.post(
+  "/vocabulary",
+  wrap(async (req, res) => {
+    const parsed = ImsCreateVocabularySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid vocabulary payload" });
+      return;
+    }
+    const result = await addVocabularyValue(parsed.data.kind, parsed.data.value);
+    res.status(result.created ? 201 : 200).json(result.value);
   })
 );
 
