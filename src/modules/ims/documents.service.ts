@@ -1,5 +1,5 @@
 import { Prisma, prisma } from "@/db";
-import type { CloseReason as PrismaCloseReason } from "@/db";
+import type { CloseReason as PrismaCloseReason, DocumentType as PrismaDocumentType } from "@/db";
 import type { ImsCreateDocument, ImsDocument, ImsRecordReturn } from "@/contract";
 
 import {
@@ -17,6 +17,10 @@ export type CreateDocumentResult =
 
 export type RecordReturnResult =
   | { ok: true; returnDocument: ImsDocument; memo: ImsDocument }
+  | { ok: false; error: string };
+
+export type StampDocumentsResult =
+  | { ok: true; documents: ImsDocument[] }
   | { ok: false; error: string };
 
 type ItemWithDetails = Prisma.InventoryItemGetPayload<{
@@ -304,4 +308,83 @@ export async function recordMemoReturn(
     returnDocument: prismaDocToDto(returnDocument),
     memo: prismaDocToDto(updatedMemo)
   };
+}
+
+// ── Email / QuickBooks stamps (admin sendEmail / _runSync) ───────────────────
+// Both are batch actions over a set of selected docs. Each stamps a single
+// timestamp column and returns the updated docs; neither is transactional
+// (one updateMany is atomic) and neither needs an actor (Document records the
+// timestamps, not who did it).
+
+// Only money docs sync to QuickBooks (admin qboRow gate). BILL_IN is inbound and
+// not creatable yet, but the rule is correct for when it is.
+const QBO_SYNCABLE_TYPES: PrismaDocumentType[] = ["INVOICE", "BILL_IN"];
+
+// Load the requested docs (deduped) and refuse the batch if any id is unknown —
+// a partial stamp would silently drop docs the caller thinks it acted on.
+async function requireDocuments(
+  ids: string[]
+): Promise<
+  | { ok: true; unique: string[]; docs: { id: string; type: PrismaDocumentType }[] }
+  | { ok: false; error: string }
+> {
+  const unique = Array.from(new Set(ids));
+  const docs = await prisma.document.findMany({
+    where: { id: { in: unique } },
+    select: { id: true, type: true }
+  });
+  if (docs.length !== unique.length) {
+    const found = new Set(docs.map((d) => d.id));
+    const missing = unique.filter((id) => !found.has(id));
+    return { ok: false, error: `Document(s) not found: ${missing.join(", ")}` };
+  }
+  return { ok: true, unique, docs };
+}
+
+async function reloadDocs(ids: string[]): Promise<ImsDocument[]> {
+  const docs = await prisma.document.findMany({
+    where: { id: { in: ids } },
+    include: IMS_DOC_INCLUDE,
+    orderBy: { issueDate: "desc" }
+  });
+  return docs.map(prismaDocToDto);
+}
+
+// Stamp emailedAt = now on each doc (admin sendEmail). Any doc type can be
+// emailed; status is untouched.
+export async function emailDocuments(ids: string[]): Promise<StampDocumentsResult> {
+  const loaded = await requireDocuments(ids);
+  if (!loaded.ok) return { ok: false, error: loaded.error };
+
+  await prisma.document.updateMany({
+    where: { id: { in: loaded.unique } },
+    data: { emailedAt: new Date() }
+  });
+  return { ok: true, documents: await reloadDocs(loaded.unique) };
+}
+
+// Stamp quickbooksSyncedAt = now on each money doc (admin _runSync). The
+// timestamp IS the "synced" signal (null = unsynced). Status is intentionally
+// left unchanged: the admin mock closes INVOICE/BILL_IN on sync, but the schema
+// separates the synced-timestamp from lifecycle status and even carries a
+// distinct EXPORTED status — whether a sync should also close/export the doc is
+// a lifecycle-rulebook call flagged for Jennifer, not something to bake here.
+export async function quickbooksSyncDocuments(ids: string[]): Promise<StampDocumentsResult> {
+  const loaded = await requireDocuments(ids);
+  if (!loaded.ok) return { ok: false, error: loaded.error };
+
+  const notSyncable = loaded.docs.filter((d) => !QBO_SYNCABLE_TYPES.includes(d.type));
+  if (notSyncable.length > 0) {
+    const detail = notSyncable.map((d) => `${d.id} (${d.type})`).join(", ");
+    return {
+      ok: false,
+      error: `Only ${QBO_SYNCABLE_TYPES.join("/")} docs sync to QuickBooks: ${detail}`
+    };
+  }
+
+  await prisma.document.updateMany({
+    where: { id: { in: loaded.unique } },
+    data: { quickbooksSyncedAt: new Date() }
+  });
+  return { ok: true, documents: await reloadDocs(loaded.unique) };
 }

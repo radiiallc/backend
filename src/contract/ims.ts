@@ -315,3 +315,12 @@ export const ImsRecordReturnSchema = z.object({
   inventoryItemIds: z.array(z.string().min(1)).optional()
 });
 export type ImsRecordReturn = z.infer<typeof ImsRecordReturnSchema>;
+
+// Batch document-id payload — shared by the "email these docs" and "sync these
+// docs to QuickBooks" actions (admin sendEmail / _runSync both act on the set of
+// selected docs). Both endpoints stamp a timestamp (emailedAt /
+// quickbooksSyncedAt) and return the updated docs.
+export const ImsDocumentIdsSchema = z.object({
+  documentIds: z.array(z.string().min(1)).min(1)
+});
+export type ImsDocumentIds = z.infer<typeof ImsDocumentIdsSchema>;

@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 
 import {
   ImsCreateDocumentSchema,
+  ImsDocumentIdsSchema,
   ImsDocumentQuerySchema,
   ImsInventoryQuerySchema,
   ImsRecordReturnSchema
@@ -9,7 +10,12 @@ import {
 
 import { requireAdmin } from "../middleware/auth";
 import { getDocumentByIdFromDb, listDocumentsFromDb } from "../modules/ims/documents.reads";
-import { createOutboundDocument, recordMemoReturn } from "../modules/ims/documents.service";
+import {
+  createOutboundDocument,
+  emailDocuments,
+  quickbooksSyncDocuments,
+  recordMemoReturn
+} from "../modules/ims/documents.service";
 import {
   getInventoryItemByIdFromDb,
   getVendorByIdFromDb,
@@ -126,6 +132,44 @@ imsRouter.post(
       return;
     }
     res.status(201).json(result.document);
+  })
+);
+
+// Stamp emailedAt = now on a batch of docs (admin sendEmail). Static path, so
+// it must precede the "/documents/:id/*" param routes below.
+imsRouter.post(
+  "/documents/email",
+  wrap(async (req, res) => {
+    const parsed = ImsDocumentIdsSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid payload" });
+      return;
+    }
+    const result = await emailDocuments(parsed.data.documentIds);
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.json({ documents: result.documents });
+  })
+);
+
+// Stamp quickbooksSyncedAt = now on a batch of INVOICE/BILL_IN docs (admin
+// _runSync). Status is left unchanged — see documents.service note.
+imsRouter.post(
+  "/documents/quickbooks-sync",
+  wrap(async (req, res) => {
+    const parsed = ImsDocumentIdsSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid payload" });
+      return;
+    }
+    const result = await quickbooksSyncDocuments(parsed.data.documentIds);
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.json({ documents: result.documents });
   })
 );
 
