@@ -72,6 +72,33 @@ function priceSnapshot(item: ItemWithDetails): {
   return { quantity: null, caratWeight: null, unitPrice: null, totalPrice: null };
 }
 
+// Recompute a Memo Out's disposition from the CURRENT state of all its lines —
+// call inside a tx AFTER those lines have been updated. A memo closes only once
+// no line is still ON_MEMO; closeReason derives from the resolved mix (all
+// returned / all sold / mixed). Shared by the return path (recordMemoReturn) and
+// the invoice-from-memo sold path so the two stay identical (admin #0025).
+async function recomputeMemoClose(tx: Prisma.TransactionClient, memoId: string): Promise<void> {
+  const lines = await tx.documentLineItem.findMany({
+    where: { documentId: memoId },
+    select: { lineStatus: true }
+  });
+  const stillOut = lines.filter((l) => l.lineStatus === "ON_MEMO").length;
+  const soldCount = lines.filter((l) => l.lineStatus === "SOLD").length;
+  const returnedCount = lines.filter((l) => l.lineStatus === "RETURNED").length;
+  const allResolved = stillOut === 0;
+  const closeReason: PrismaCloseReason | null = !allResolved
+    ? null
+    : returnedCount > 0 && soldCount > 0
+      ? "MIXED"
+      : soldCount > 0
+        ? "SOLD"
+        : "RETURNED";
+  await tx.document.update({
+    where: { id: memoId },
+    data: { status: allResolved ? "CLOSED" : "OPEN", closeReason }
+  });
+}
+
 export async function createOutboundDocument(
   input: ImsCreateDocument,
   createdById: string
@@ -171,6 +198,35 @@ export async function createOutboundDocument(
       });
     }
 
+    // Invoice-from-memo (admin #0025 lifecycle): when an INVOICE sells a stone
+    // that was still ON_MEMO, resolve its originating open memo line to SOLD,
+    // linked to this invoice, and recompute that memo's close state. This closes
+    // the memo↔invoice coupling gap — the invoice IS the resolving document, the
+    // mirror of a return doc resolving a line to RETURNED.
+    if (type === "INVOICE") {
+      const soldFromMemo = snapshots.filter((s) => s.currentStatus === "ON_MEMO");
+      const affectedMemoIds = new Set<string>();
+      for (const s of soldFromMemo) {
+        const memoLines = await tx.documentLineItem.findMany({
+          where: {
+            inventoryItemId: s.itemId,
+            lineStatus: "ON_MEMO",
+            document: { type: "MEMO_OUT" }
+          }
+        });
+        for (const ml of memoLines) {
+          await tx.documentLineItem.update({
+            where: { id: ml.id },
+            data: { lineStatus: "SOLD", resolvedByDocumentId: doc.id }
+          });
+          affectedMemoIds.add(ml.documentId);
+        }
+      }
+      for (const memoId of affectedMemoIds) {
+        await recomputeMemoClose(tx, memoId);
+      }
+    }
+
     return doc.id;
   });
 
@@ -221,8 +277,6 @@ export async function recordMemoReturn(
     }
   }
   if (targetLines.length === 0) return { ok: false, error: "No matching stones to return" };
-
-  const returnedLineIds = new Set(targetLines.map((l) => l.id));
 
   const returnDocId = await prisma.$transaction(async (tx) => {
     const seq = await tx.documentSequence.upsert({
@@ -276,25 +330,8 @@ export async function recordMemoReturn(
       });
     }
 
-    // Recompute the memo's disposition from ALL its lines' final state.
-    const finalStatuses = memo.lineItems.map((l) =>
-      returnedLineIds.has(l.id) ? "RETURNED" : l.lineStatus
-    );
-    const stillOut = finalStatuses.filter((s) => s === "ON_MEMO").length;
-    const returnedCount = finalStatuses.filter((s) => s === "RETURNED").length;
-    const soldCount = finalStatuses.filter((s) => s === "SOLD").length;
-    const allResolved = stillOut === 0;
-    const closeReason: PrismaCloseReason | null = !allResolved
-      ? null
-      : returnedCount > 0 && soldCount > 0
-        ? "MIXED"
-        : soldCount > 0
-          ? "SOLD"
-          : "RETURNED";
-    await tx.document.update({
-      where: { id: memo.id },
-      data: { status: allResolved ? "CLOSED" : "OPEN", closeReason }
-    });
+    // Auto-close the memo iff nothing is still out (partial return keeps it OPEN).
+    await recomputeMemoClose(tx, memo.id);
 
     return returnDoc.id;
   });
