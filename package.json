@@ -4,11 +4,18 @@
   "private": true,
   "description": "RADIIA standalone backend — Express API + Prisma. Serves the client portal, admin portal, and future portals. Fully independent of any frontend repo.",
   "scripts": {
-    "dev": "dotenv -e .env.local -- tsx watch src/index.ts",
+    "dev": "dotenv -e .env.dev -- tsx watch src/index.ts",
+    "dev:prod": "dotenv -e .env.local -- tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
     "build": "prisma generate",
     "db:generate": "prisma generate",
+
+    "migrate:dev": "dotenv -e .env.dev -- prisma migrate dev",
+    "migrate:status:dev": "dotenv -e .env.dev -- prisma migrate status",
+    "migrate:reset:dev": "dotenv -e .env.dev -- prisma migrate reset",
+    "seed:dev": "dotenv -e .env.dev -- tsx prisma/seed.ts",
+    "studio:dev": "dotenv -e .env.dev -- prisma studio",
 
     "migrate:prod": "dotenv -e .env.local -- prisma migrate deploy",
     "migrate:status:prod": "dotenv -e .env.local -- prisma migrate status",
