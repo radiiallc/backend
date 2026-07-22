@@ -208,6 +208,139 @@ export const ImsInventoryQuerySchema = z.object({
 });
 export type ImsInventoryQuery = z.infer<typeof ImsInventoryQuerySchema>;
 
+// ── Inventory write DTOs (manual create / edit) ──────────────────────────────
+// Per-type detail inputs mirror the read detail shapes MINUS the server-only /
+// derived fields: `certUrl` never crosses the wire (platform invariant), and
+// `totalCost` / `totalWholesalePrice` are app-computed on write (carat × per-ct),
+// never accepted from the client. shape+weightCt (stone), jewelryItemType+metal+
+// productionCost (jewelry), subtype+metalType+cost (other) are required to match
+// the non-nullable schema columns; everything else is optional/nullable.
+
+export const ImsStoneDetailInputSchema = z.object({
+  gemType: z.string().nullable().optional(),
+  naturalOrLab: StoneTypeSchema.nullable().optional(),
+  shape: z.string().min(1),
+  weightCt: z.number().positive(),
+  quantity: z.number().int().nullable().optional(),
+  color: z.string().nullable().optional(),
+  fancyColor: z.string().nullable().optional(),
+  fancyIntensity: z.string().nullable().optional(),
+  fancyOvertone: z.string().nullable().optional(),
+  clarity: z.string().nullable().optional(),
+  cutGrade: z.string().nullable().optional(),
+  polish: z.string().nullable().optional(),
+  symmetry: z.string().nullable().optional(),
+  fluorescence: z.string().nullable().optional(),
+  lengthMm: z.number().nullable().optional(),
+  widthMm: z.number().nullable().optional(),
+  heightMm: z.number().nullable().optional(),
+  depthPct: z.number().nullable().optional(),
+  tablePct: z.number().nullable().optional(),
+  girdle: z.string().nullable().optional(),
+  ratio: z.number().nullable().optional(),
+  lab: z.string().nullable().optional(),
+  certNumber: z.string().nullable().optional(),
+  origin: z.string().nullable().optional(),
+  treatment: z.string().nullable().optional(),
+  costPerCt: z.number().nullable().optional(),
+  wholesalePricePerCt: z.number().nullable().optional(),
+  photo1Url: z.string().nullable().optional(),
+  photo2Url: z.string().nullable().optional(),
+  videoUrl: z.string().nullable().optional()
+});
+export type ImsStoneDetailInput = z.infer<typeof ImsStoneDetailInputSchema>;
+
+export const ImsJewelryDetailInputSchema = z.object({
+  jewelryItemType: z.string().min(1),
+  description: z.string().nullable().optional(),
+  quantity: z.number().int().positive().optional(),
+  metal: z.string().min(1),
+  lengthMm: z.number().nullable().optional(),
+  ringSize: z.string().nullable().optional(),
+  mm: z.number().nullable().optional(),
+  metalWeightGrams: z.number().nullable().optional(),
+  productionCost: z.number().nonnegative(),
+  wholesalePrice: z.number().nullable().optional(),
+  retailPrice: z.number().nullable().optional(),
+  brand: z.string().nullable().optional(),
+  certNumber: z.string().nullable().optional(),
+  photo1Url: z.string().nullable().optional(),
+  photo2Url: z.string().nullable().optional(),
+  videoUrl: z.string().nullable().optional()
+});
+export type ImsJewelryDetailInput = z.infer<typeof ImsJewelryDetailInputSchema>;
+
+export const ImsOtherMaterialDetailInputSchema = z.object({
+  category: z.string().nullable().optional(),
+  subtype: z.string().min(1),
+  quantity: z.number().int().positive().optional(),
+  metalType: z.string().min(1),
+  lengthMm: z.number().nullable().optional(),
+  size: z.string().nullable().optional(),
+  mm: z.number().nullable().optional(),
+  weightGrams: z.number().nullable().optional(),
+  description: z.string().nullable().optional(),
+  cost: z.number().nonnegative(),
+  wholesalePrice: z.number().nullable().optional(),
+  photo1Url: z.string().nullable().optional(),
+  photo2Url: z.string().nullable().optional(),
+  videoUrl: z.string().nullable().optional()
+});
+export type ImsOtherMaterialDetailInput = z.infer<typeof ImsOtherMaterialDetailInputSchema>;
+
+// Core fields shared by every create branch. Status is deliberately NOT settable
+// here — a new item always enters IN_STOCK, and status thereafter moves only
+// through documents (memo/invoice/return) or reserve/release, never a raw write.
+const coreCreateFields = {
+  vendorId: z.string().min(1).optional(),
+  brandOwnerId: z.string().min(1).optional(),
+  itemName: z.string().optional(),
+  vendorSku: z.string().optional(),
+  notes: z.string().optional(),
+  visibleOnPortal: z.boolean().optional()
+};
+
+// Create one inventory item + its single detail group, keyed by itemType. The
+// SKU is auto-minted server-side (admin never types it on create).
+export const ImsCreateInventoryItemSchema = z.discriminatedUnion("itemType", [
+  z.object({
+    itemType: z.literal("STONE"),
+    itemSubtype: ItemSubtypeSchema.optional(),
+    ...coreCreateFields,
+    stone: ImsStoneDetailInputSchema
+  }),
+  z.object({
+    itemType: z.literal("JEWELRY"),
+    ...coreCreateFields,
+    jewelry: ImsJewelryDetailInputSchema
+  }),
+  z.object({
+    itemType: z.literal("OTHER_MATERIAL"),
+    ...coreCreateFields,
+    material: ImsOtherMaterialDetailInputSchema
+  })
+]);
+export type ImsCreateInventoryItem = z.infer<typeof ImsCreateInventoryItemSchema>;
+
+// Patch an item: any subset of core fields + a partial patch of its OWN detail
+// group (the service rejects a detail patch that doesn't match the item's type).
+// itemType is immutable; status is not patchable (see coreCreateFields note).
+// null clears a nullable field; an absent key leaves it unchanged.
+export const ImsUpdateInventoryItemSchema = z.object({
+  sku: z.string().min(1).optional(),
+  vendorId: z.string().min(1).nullable().optional(),
+  brandOwnerId: z.string().min(1).nullable().optional(),
+  itemName: z.string().nullable().optional(),
+  vendorSku: z.string().nullable().optional(),
+  notes: z.string().nullable().optional(),
+  visibleOnPortal: z.boolean().optional(),
+  itemSubtype: ItemSubtypeSchema.nullable().optional(),
+  stone: ImsStoneDetailInputSchema.partial().optional(),
+  jewelry: ImsJewelryDetailInputSchema.partial().optional(),
+  material: ImsOtherMaterialDetailInputSchema.partial().optional()
+});
+export type ImsUpdateInventoryItem = z.infer<typeof ImsUpdateInventoryItemSchema>;
+
 // ── Documents ────────────────────────────────────────────────────────────────
 // Back-office inbound/outbound docs. Direction, party kind, party name, line
 // count and total are all DERIVED on read (never stored) — see

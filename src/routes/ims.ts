@@ -2,10 +2,12 @@ import { Router, type Request, type Response } from "express";
 
 import {
   ImsCreateDocumentSchema,
+  ImsCreateInventoryItemSchema,
   ImsDocumentIdsSchema,
   ImsDocumentQuerySchema,
   ImsInventoryQuerySchema,
-  ImsRecordReturnSchema
+  ImsRecordReturnSchema,
+  ImsUpdateInventoryItemSchema
 } from "@/contract";
 
 import { requireAdmin } from "../middleware/auth";
@@ -16,6 +18,7 @@ import {
   quickbooksSyncDocuments,
   recordMemoReturn
 } from "../modules/ims/documents.service";
+import { createInventoryItem, updateInventoryItem } from "../modules/ims/inventory.service";
 import {
   getInventoryItemByIdFromDb,
   getVendorByIdFromDb,
@@ -63,6 +66,46 @@ imsRouter.get(
       return;
     }
     res.json(item);
+  })
+);
+
+// Manually add one inventory item (+ its single detail group). The SKU is
+// auto-minted; the item enters IN_STOCK. Inbound docs (Bill In / Memo In) are a
+// separate, later path — this is the admin's "New inventory item".
+imsRouter.post(
+  "/inventory",
+  wrap(async (req, res) => {
+    const parsed = ImsCreateInventoryItemSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid inventory payload" });
+      return;
+    }
+    const result = await createInventoryItem(parsed.data);
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.status(201).json(result.item);
+  })
+);
+
+// Edit an item's core + own-type detail fields. Status and itemType are not
+// patchable here (status moves only through documents / reserve-release).
+imsRouter.patch(
+  "/inventory/:id",
+  wrap(async (req, res) => {
+    const parsed = ImsUpdateInventoryItemSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid inventory payload" });
+      return;
+    }
+    const result = await updateInventoryItem(req.params.id, parsed.data);
+    if (!result.ok) {
+      const code = result.error === "Inventory item not found" ? 404 : 400;
+      res.status(code).json({ error: result.error });
+      return;
+    }
+    res.json(result.item);
   })
 );
 
