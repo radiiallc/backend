@@ -517,6 +517,56 @@ export const ImsCreatePurchaseOrderSchema = z.object({
 });
 export type ImsCreatePurchaseOrder = z.infer<typeof ImsCreatePurchaseOrderSchema>;
 
+// Core fields for an item RECEIVED on an inbound document. Deliberately has NO
+// party FK: every item on an inbound doc inherits the document's vendor, and a
+// standard vendor Bill In / Memo In sets no brandOwner. Status/SKU are
+// server-assigned (item enters IN_STOCK; SKU auto-minted).
+const inboundItemCoreFields = {
+  itemName: z.string().optional(),
+  vendorSku: z.string().optional(),
+  notes: z.string().optional(),
+  visibleOnPortal: z.boolean().optional()
+};
+
+// One item to receive on an inbound doc — the same discriminated detail shape as
+// a manual inventory create, minus the party FKs (the doc supplies the vendor).
+export const ImsInboundItemInputSchema = z.discriminatedUnion("itemType", [
+  z.object({
+    itemType: z.literal("STONE"),
+    itemSubtype: ItemSubtypeSchema.optional(),
+    ...inboundItemCoreFields,
+    stone: ImsStoneDetailInputSchema
+  }),
+  z.object({
+    itemType: z.literal("JEWELRY"),
+    ...inboundItemCoreFields,
+    jewelry: ImsJewelryDetailInputSchema
+  }),
+  z.object({
+    itemType: z.literal("OTHER_MATERIAL"),
+    ...inboundItemCoreFields,
+    material: ImsOtherMaterialDetailInputSchema
+  })
+]);
+export type ImsInboundItemInput = z.infer<typeof ImsInboundItemInputSchema>;
+
+// Create an inbound document that RECEIVES new inventory from a vendor
+// (Jennifer 2026-07-22: the inbound doc IS the upload vehicle). BILL_IN =
+// purchase (RADIIA owns) vs MEMO_IN = consignment (vendor keeps ownership) — the
+// owned-vs-consigned distinction is the doc TYPE, not an item field. Each item
+// row is created (-> IN_STOCK), inherits this doc's vendor, and links to the doc.
+// Inbound docs carry the vendor's own number in externalReference and never mint
+// an internal documentNumber. No discount field: the read mapper prices inbound
+// docs at line-cost subtotal (payment/terms live in QuickBooks, not the portal).
+export const ImsCreateInboundDocumentSchema = z.object({
+  type: z.enum(["BILL_IN", "MEMO_IN"]),
+  vendorId: z.string().min(1),
+  externalReference: z.string().optional(),
+  notes: z.string().optional(),
+  items: z.array(ImsInboundItemInputSchema).min(1)
+});
+export type ImsCreateInboundDocument = z.infer<typeof ImsCreateInboundDocumentSchema>;
+
 // Batch document-id payload — shared by the "email these docs" and "sync these
 // docs to QuickBooks" actions (admin sendEmail / _runSync both act on the set of
 // selected docs). Both endpoints stamp a timestamp (emailedAt /

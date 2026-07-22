@@ -1,5 +1,10 @@
 import { Prisma, prisma } from "@/db";
-import type { ImsCreateInventoryItem, ImsInventoryItem, ImsUpdateInventoryItem } from "@/contract";
+import type {
+  ImsCreateInventoryItem,
+  ImsInboundItemInput,
+  ImsInventoryItem,
+  ImsUpdateInventoryItem
+} from "@/contract";
 
 import { IMS_ITEM_INCLUDE, prismaItemToDto } from "./mappers";
 
@@ -51,6 +56,60 @@ async function mintSku(): Promise<string> {
     }
   }
   return `RAD-0${max + 1}`;
+}
+
+// Mint N sequential RADIIA SKUs from a SINGLE max-scan, transaction-aware (pass
+// the tx client so the scan sees committed state before the batch inserts).
+// Assigns max+1 … max+N; the sku unique constraint + the caller's retry cover a
+// race with a concurrent minter. Used by the inbound-doc receive (many items at
+// once); the single mintSku above stays for one-off creates.
+export async function mintSkuBatch(
+  tx: Prisma.TransactionClient,
+  count: number
+): Promise<string[]> {
+  const rows = await tx.inventoryItem.findMany({
+    where: { sku: { startsWith: "RAD-0" } },
+    select: { sku: true }
+  });
+  let max = 1000;
+  for (const { sku } of rows) {
+    const m = /^RAD-0(\d+)$/.exec(sku);
+    if (m) {
+      const n = Number(m[1]);
+      if (Number.isFinite(n) && n > max) max = n;
+    }
+  }
+  return Array.from({ length: count }, (_, i) => `RAD-0${max + 1 + i}`);
+}
+
+// Build the Prisma create input for one item + its detail group from an inbound
+// item row. vendorId is supplied by the caller (the inbound doc's vendor);
+// brandOwner is not set on a standard vendor Bill In / Memo In. The SKU is
+// supplied by the caller (batch-minted). Mirrors the detail shaping in
+// createInventoryItem, incl. the app-computed stone totals.
+export function buildInboundItemCreateData(
+  input: ImsInboundItemInput,
+  vendorId: string,
+  sku: string
+): Prisma.InventoryItemUncheckedCreateInput {
+  const core = {
+    sku,
+    itemType: input.itemType,
+    vendorId,
+    itemName: input.itemName ?? null,
+    vendorSku: input.vendorSku ?? null,
+    notes: input.notes ?? null,
+    visibleOnPortal: input.visibleOnPortal ?? false
+  };
+  if (input.itemType === "STONE") {
+    const s = input.stone;
+    const totals = stoneTotals(s.weightCt, s.wholesalePricePerCt ?? null, s.costPerCt ?? null);
+    return { ...core, itemSubtype: input.itemSubtype ?? null, stone: { create: { ...s, ...totals } } };
+  }
+  if (input.itemType === "JEWELRY") {
+    return { ...core, jewelry: { create: { ...input.jewelry } } };
+  }
+  return { ...core, material: { create: { ...input.material } } };
 }
 
 async function assertPartiesExist(

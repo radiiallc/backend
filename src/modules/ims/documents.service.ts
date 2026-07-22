@@ -2,6 +2,7 @@ import { Prisma, prisma } from "@/db";
 import type { CloseReason as PrismaCloseReason, DocumentType as PrismaDocumentType } from "@/db";
 import type {
   ImsCreateDocument,
+  ImsCreateInboundDocument,
   ImsCreatePurchaseOrder,
   ImsDocument,
   ImsRecordReturn
@@ -15,6 +16,11 @@ import {
   type OutboundCreateType
 } from "./documents.constants";
 import { IMS_DOC_INCLUDE, prismaDocToDto } from "./documents.mappers";
+import { buildInboundItemCreateData, mintSkuBatch } from "./inventory.service";
+
+function isUniqueViolation(e: unknown): boolean {
+  return e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002";
+}
 
 export type CreateDocumentResult =
   | { ok: true; document: ImsDocument }
@@ -349,6 +355,111 @@ export async function createPurchaseOrder(
     include: IMS_DOC_INCLUDE
   });
   return { ok: true, document: prismaDocToDto(created) };
+}
+
+// Create an INBOUND document (Bill In / Memo In) that RECEIVES new inventory from
+// a vendor (Jennifer 2026-07-22 — the inbound doc IS the upload vehicle). Unlike
+// outbound create (which draws down existing stock), this CREATES each item
+// (-> IN_STOCK) and links it to the doc. Design decisions:
+//   • BILL_IN = purchase/owned, MEMO_IN = consignment (vendor keeps ownership) —
+//     the distinction is the doc TYPE, not a separate item field (payments +
+//     ownership live in QuickBooks, not the portal).
+//   • The doc carries the vendor's OWN number in externalReference; no internal
+//     documentNumber is minted (inbound never draws a sequence).
+//   • Every item inherits the doc's vendorId; brandOwner is not set here. Lines
+//     are priced at COST (the vendor-facing basis), lineStatus IN_STOCK.
+//   • Each new item gets a null -> IN_STOCK ItemStatusHistory row pointing at this
+//     doc: receiving here IS "through a document" (contrast the manual inventory
+//     create, which writes none). dueDate pre-fills from the vendor's terms.
+// Transactional with a batch SKU mint + whole-tx retry on a sku race. NOTE: a very
+// large bulk migration (case A) may need chunking/timeout tuning; the ongoing
+// per-document receive (case B) is well within one tx.
+export async function createInboundDocument(
+  input: ImsCreateInboundDocument,
+  createdById: string
+): Promise<CreateDocumentResult> {
+  const vendor = await prisma.vendor.findUnique({
+    where: { id: input.vendorId },
+    select: { id: true, defaultMemoTermsDays: true, defaultInvoiceTermsDays: true }
+  });
+  if (!vendor) return { ok: false, error: "Vendor not found" };
+
+  const now = new Date();
+  const termDays =
+    input.type === "MEMO_IN" ? vendor.defaultMemoTermsDays : vendor.defaultInvoiceTermsDays;
+  const dueDate = termDays ? new Date(now.getTime() + termDays * 86_400_000) : null;
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const docId = await prisma.$transaction(
+        async (tx) => {
+          const skus = await mintSkuBatch(tx, input.items.length);
+
+          const lines: Array<{ inventoryItemId: string } & ReturnType<typeof costSnapshot>> = [];
+          const createdItemIds: string[] = [];
+          for (let i = 0; i < input.items.length; i++) {
+            const data = buildInboundItemCreateData(input.items[i], input.vendorId, skus[i]);
+            const item = await tx.inventoryItem.create({
+              data,
+              include: { stone: true, jewelry: true, material: true }
+            });
+            createdItemIds.push(item.id);
+            lines.push({ inventoryItemId: item.id, ...costSnapshot(item) });
+          }
+
+          const doc = await tx.document.create({
+            data: {
+              type: input.type,
+              documentNumber: null, // inbound uses the vendor's own reference
+              externalReference: input.externalReference ?? null,
+              status: "OPEN",
+              vendorId: input.vendorId,
+              issueDate: now,
+              dueDate,
+              notes: input.notes ?? null,
+              createdById,
+              lineItems: {
+                create: lines.map((l) => ({
+                  inventoryItemId: l.inventoryItemId,
+                  lineStatus: "IN_STOCK" as const,
+                  quantity: l.quantity,
+                  caratWeight: l.caratWeight,
+                  unitPrice: l.unitPrice,
+                  totalPrice: l.totalPrice
+                }))
+              }
+            }
+          });
+
+          // Provenance: each item was brought into stock THROUGH this document.
+          for (const inventoryItemId of createdItemIds) {
+            await tx.itemStatusHistory.create({
+              data: {
+                inventoryItemId,
+                previousStatus: null,
+                newStatus: "IN_STOCK",
+                documentId: doc.id,
+                changedById: createdById
+              }
+            });
+          }
+
+          return doc.id;
+        },
+        { timeout: 30_000 }
+      );
+
+      const created = await prisma.document.findUniqueOrThrow({
+        where: { id: docId },
+        include: IMS_DOC_INCLUDE
+      });
+      return { ok: true, document: prismaDocToDto(created) };
+    } catch (e) {
+      if (isUniqueViolation(e) && attempt < 2) continue; // sku raced — re-mint whole batch
+      throw e;
+    }
+  }
+  return { ok: false, error: "Could not allocate unique SKUs — please retry" };
 }
 
 // Record a return against an OPEN Memo Out (admin #0025 / recordMemoReturn):

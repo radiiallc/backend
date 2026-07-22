@@ -5,6 +5,7 @@ import {
   ImsClientQuerySchema,
   ImsCreateClientSchema,
   ImsCreateDocumentSchema,
+  ImsCreateInboundDocumentSchema,
   ImsCreateInventoryItemSchema,
   ImsCreatePurchaseOrderSchema,
   ImsCreateVendorSchema,
@@ -27,6 +28,7 @@ import {
 } from "../modules/ims/clients.service";
 import { getDocumentByIdFromDb, listDocumentsFromDb } from "../modules/ims/documents.reads";
 import {
+  createInboundDocument,
   createOutboundDocument,
   createPurchaseOrder,
   emailDocuments,
@@ -385,6 +387,26 @@ imsRouter.post(
       return;
     }
     const result = await createPurchaseOrder(parsed.data, req.user!.id);
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.status(201).json(result.document);
+  })
+);
+
+// Create an inbound Bill In / Memo In that RECEIVES new inventory — each item is
+// created (-> IN_STOCK) and linked to the doc (see documents.service). Static
+// path, so it precedes the "/documents/:id/*" param routes below.
+imsRouter.post(
+  "/documents/inbound",
+  wrap(async (req, res) => {
+    const parsed = ImsCreateInboundDocumentSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid inbound document payload" });
+      return;
+    }
+    const result = await createInboundDocument(parsed.data, req.user!.id);
     if (!result.ok) {
       res.status(400).json({ error: result.error });
       return;
