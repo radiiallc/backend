@@ -31,9 +31,10 @@ type PrismaItemWithRelations = Prisma.InventoryItemGetPayload<{
   include: typeof IMS_ITEM_INCLUDE;
 }>;
 
-// Vendors carry a derived inventory count via _count.
+// Vendors carry a derived inventory count + an open-document count (the admin's
+// "N open"), both single-query filtered relation counts.
 export const IMS_VENDOR_INCLUDE = {
-  _count: { select: { inventoryItems: true } }
+  _count: { select: { inventoryItems: true, documents: { where: { status: "OPEN" } } } }
 } satisfies Prisma.VendorInclude;
 
 type PrismaVendorWithCount = Prisma.VendorGetPayload<{ include: typeof IMS_VENDOR_INCLUDE }>;
@@ -179,7 +180,8 @@ export function prismaVendorToDto(v: PrismaVendorWithCount): ImsVendor {
     notes: v.notes,
     createdAt: v.createdAt.toISOString(),
     updatedAt: v.updatedAt.toISOString(),
-    inventoryItemCount: v._count.inventoryItems
+    inventoryItemCount: v._count.inventoryItems,
+    openDocumentCount: v._count.documents
   };
 }
 

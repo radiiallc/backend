@@ -7,6 +7,7 @@ import {
   ImsCreateDocumentSchema,
   ImsCreateInventoryItemSchema,
   ImsCreatePurchaseOrderSchema,
+  ImsCreateVendorSchema,
   ImsCreateVocabularySchema,
   ImsDocumentIdsSchema,
   ImsDocumentQuerySchema,
@@ -14,7 +15,8 @@ import {
   ImsRecordReturnSchema,
   ImsReserveItemSchema,
   ImsUpdateClientSchema,
-  ImsUpdateInventoryItemSchema
+  ImsUpdateInventoryItemSchema,
+  ImsUpdateVendorSchema
 } from "@/contract";
 
 import { requireAdmin } from "../middleware/auth";
@@ -46,6 +48,7 @@ import {
   listVendorsFromDb,
   listVocabularyFromDb
 } from "../modules/ims/reads";
+import { createVendor, updateVendor } from "../modules/ims/vendors.service";
 import { addVocabularyValue } from "../modules/ims/vocabulary.service";
 
 export const imsRouter = Router();
@@ -175,6 +178,45 @@ imsRouter.get(
       return;
     }
     res.json(vendor);
+  })
+);
+
+// Manually add a vendor (admin "New vendor"). name is unique — a duplicate is a
+// friendly 400.
+imsRouter.post(
+  "/vendors",
+  wrap(async (req, res) => {
+    const parsed = ImsCreateVendorSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid vendor payload" });
+      return;
+    }
+    const result = await createVendor(parsed.data);
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.status(201).json(result.vendor);
+  })
+);
+
+// Edit a vendor's fields (admin "Edit vendor"). A clashing rename is a friendly
+// 400; a missing id is 404.
+imsRouter.patch(
+  "/vendors/:id",
+  wrap(async (req, res) => {
+    const parsed = ImsUpdateVendorSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid vendor payload" });
+      return;
+    }
+    const result = await updateVendor(req.params.id, parsed.data);
+    if (!result.ok) {
+      const code = result.error === "Vendor not found" ? 404 : 400;
+      res.status(code).json({ error: result.error });
+      return;
+    }
+    res.json(result.vendor);
   })
 );
 

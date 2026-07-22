@@ -170,9 +170,45 @@ export const ImsVendorSchema = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
   // Derived: how many inventory rows currently point at this vendor.
-  inventoryItemCount: z.number()
+  inventoryItemCount: z.number(),
+  // Derived: open documents (memo in / bill / PO …) held against this vendor —
+  // the admin's "N open" on the vendor directory/profile (mirrors the client's
+  // openDocumentCount).
+  openDocumentCount: z.number()
 });
 export type ImsVendor = z.infer<typeof ImsVendorSchema>;
+
+// Manually add a vendor (admin "New vendor" / saveVendor). Only name is required
+// (unique — a duplicate is rejected with a friendly error); the rest use schema
+// defaults / null when omitted. quickbooksId is NOT set here (the QuickBooks
+// connect is a separate OAuth flow), matching the client create.
+export const ImsCreateVendorSchema = z.object({
+  name: z.string().trim().min(1),
+  contactName: z.string().nullable().optional(),
+  contactEmail: z.string().nullable().optional(),
+  contactPhone: z.string().nullable().optional(),
+  address: z.string().nullable().optional(),
+  defaultMemoTermsDays: z.number().int().positive().nullable().optional(),
+  defaultInvoiceTermsDays: z.number().int().positive().nullable().optional(),
+  quickbooksId: z.string().nullable().optional(),
+  notes: z.string().optional()
+});
+export type ImsCreateVendor = z.infer<typeof ImsCreateVendorSchema>;
+
+// Patch a vendor's fields. null clears a nullable field; an absent key is left
+// unchanged. name stays unique (a clashing rename is rejected).
+export const ImsUpdateVendorSchema = z.object({
+  name: z.string().trim().min(1).optional(),
+  contactName: z.string().nullable().optional(),
+  contactEmail: z.string().nullable().optional(),
+  contactPhone: z.string().nullable().optional(),
+  address: z.string().nullable().optional(),
+  defaultMemoTermsDays: z.number().int().positive().nullable().optional(),
+  defaultInvoiceTermsDays: z.number().int().positive().nullable().optional(),
+  quickbooksId: z.string().nullable().optional(),
+  notes: z.string().optional()
+});
+export type ImsUpdateVendor = z.infer<typeof ImsUpdateVendorSchema>;
 
 // ── Vocabulary (self-growing pick-or-add lists) ──────────────────────────────
 
