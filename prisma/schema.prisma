@@ -139,9 +139,9 @@ model CartItem {
   cartId     String
   cart       Cart      @relation(fields: [cartId], references: [id], onDelete: Cascade)
   gemstoneId String?
-  gemstone   Gemstone? @relation(fields: [gemstoneId], references: [id])
+  gemstone   Gemstone? @relation(fields: [gemstoneId], references: [id], onDelete: Restrict)
   diamondId  String?
-  diamond    Diamond?  @relation(fields: [diamondId], references: [id])
+  diamond    Diamond?  @relation(fields: [diamondId], references: [id], onDelete: Cascade)
   qty        Int       @default(1)
   addedAt    DateTime  @default(now())
 
