@@ -10,6 +10,7 @@ import { catalogRouter } from "./routes/catalog";
 import { cartRouter } from "./routes/cart";
 import { cronRouter } from "./routes/cron";
 import { favoritesRouter } from "./routes/favorites";
+import { imsRouter } from "./routes/ims";
 import { internalRouter } from "./routes/internal";
 import { profileRouter } from "./routes/profile";
 import { requestsRouter } from "./routes/requests";
@@ -64,6 +65,7 @@ app.use("/favorites", favoritesRouter);
 app.use("/profile", profileRouter);
 app.use("/requests", requestsRouter);
 app.use("/admin", adminRouter);
+app.use("/ims", imsRouter);
 app.use("/cron", cronRouter);
 app.use("/internal", internalRouter);
 
