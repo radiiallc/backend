@@ -468,6 +468,19 @@ export const ImsRecordReturnSchema = z.object({
 });
 export type ImsRecordReturn = z.infer<typeof ImsRecordReturnSchema>;
 
+// Create a Purchase Order — a vendor-addressed outbound doc committing RADIIA to
+// buy the listed inventory items from that vendor. Distinct from the client-doc
+// create above: it carries a vendorId (not a clientId), prices each line at COST
+// (a PO export is "vendor-safe: no client / wholesale"), and does NOT transition
+// item status (the PO is the order; a later Bill In receives the goods).
+export const ImsCreatePurchaseOrderSchema = z.object({
+  vendorId: z.string().min(1),
+  inventoryItemIds: z.array(z.string().min(1)).min(1),
+  discountAmount: z.number().nonnegative().optional(),
+  notes: z.string().optional()
+});
+export type ImsCreatePurchaseOrder = z.infer<typeof ImsCreatePurchaseOrderSchema>;
+
 // Batch document-id payload — shared by the "email these docs" and "sync these
 // docs to QuickBooks" actions (admin sendEmail / _runSync both act on the set of
 // selected docs). Both endpoints stamp a timestamp (emailedAt /

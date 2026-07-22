@@ -1,6 +1,11 @@
 import { Prisma, prisma } from "@/db";
 import type { CloseReason as PrismaCloseReason, DocumentType as PrismaDocumentType } from "@/db";
-import type { ImsCreateDocument, ImsDocument, ImsRecordReturn } from "@/contract";
+import type {
+  ImsCreateDocument,
+  ImsCreatePurchaseOrder,
+  ImsDocument,
+  ImsRecordReturn
+} from "@/contract";
 
 import {
   ALLOWED_SOURCE_STATUS,
@@ -68,6 +73,36 @@ function priceSnapshot(item: ItemWithDetails): {
   if (item.material) {
     const price = num(item.material.wholesalePrice);
     return { quantity: item.material.quantity, caratWeight: null, unitPrice: price, totalPrice: price };
+  }
+  return { quantity: null, caratWeight: null, unitPrice: null, totalPrice: null };
+}
+
+// Freeze the item's COST (what RADIIA pays the vendor) onto a PO line — the
+// vendor-facing basis, never wholesale (a PO export is "vendor-safe: no client /
+// wholesale"). Stones = carat × cost-per-carat; jewelry = productionCost; other
+// = cost. Mirrors priceSnapshot but on the cost columns.
+function costSnapshot(item: ItemWithDetails): {
+  quantity: number | null;
+  caratWeight: number | null;
+  unitPrice: number | null;
+  totalPrice: number | null;
+} {
+  if (item.stone) {
+    const carat = num(item.stone.weightCt);
+    const cpc = num(item.stone.costPerCt);
+    const total =
+      carat !== null && cpc !== null
+        ? Math.round(carat * cpc * 100) / 100
+        : num(item.stone.totalCost);
+    return { quantity: item.stone.quantity, caratWeight: carat, unitPrice: cpc, totalPrice: total };
+  }
+  if (item.jewelry) {
+    const cost = num(item.jewelry.productionCost);
+    return { quantity: item.jewelry.quantity, caratWeight: null, unitPrice: cost, totalPrice: cost };
+  }
+  if (item.material) {
+    const cost = num(item.material.cost);
+    return { quantity: item.material.quantity, caratWeight: null, unitPrice: cost, totalPrice: cost };
   }
   return { quantity: null, caratWeight: null, unitPrice: null, totalPrice: null };
 }
@@ -227,6 +262,85 @@ export async function createOutboundDocument(
       }
     }
 
+    return doc.id;
+  });
+
+  const created = await prisma.document.findUniqueOrThrow({
+    where: { id: docId },
+    include: IMS_DOC_INCLUDE
+  });
+  return { ok: true, document: prismaDocToDto(created) };
+}
+
+// Create a Purchase Order — a vendor-addressed outbound doc committing RADIIA to
+// buy the listed inventory items from that vendor. Unlike a Memo Out / Invoice, a
+// PO does NOT transition item status (it's the order, not a stock movement — the
+// eventual Bill In receives the goods) and writes no ItemStatusHistory row. Each
+// line is priced at COST (vendor-facing), not wholesale. The schema requires an
+// inventory item per line, so a PO is raised against existing stock; an item with
+// no vendor or THIS vendor is allowed, one belonging to a different vendor is not.
+export async function createPurchaseOrder(
+  input: ImsCreatePurchaseOrder,
+  createdById: string
+): Promise<CreateDocumentResult> {
+  const vendor = await prisma.vendor.findUnique({
+    where: { id: input.vendorId },
+    select: { id: true }
+  });
+  if (!vendor) return { ok: false, error: "Vendor not found" };
+
+  const ids = Array.from(new Set(input.inventoryItemIds));
+  const items = await prisma.inventoryItem.findMany({
+    where: { id: { in: ids } },
+    include: { stone: true, jewelry: true, material: true }
+  });
+  if (items.length !== ids.length) {
+    const found = new Set(items.map((i) => i.id));
+    const missing = ids.filter((id) => !found.has(id));
+    return { ok: false, error: `Inventory item(s) not found: ${missing.join(", ")}` };
+  }
+
+  const mismatched = items.filter((i) => i.vendorId !== null && i.vendorId !== input.vendorId);
+  if (mismatched.length > 0) {
+    const detail = mismatched.map((i) => i.sku).join(", ");
+    return { ok: false, error: `Item(s) belong to a different vendor: ${detail}` };
+  }
+
+  const lines = items.map((item) => ({ itemId: item.id, ...costSnapshot(item) }));
+  const now = new Date();
+
+  const docId = await prisma.$transaction(async (tx) => {
+    const seq = await tx.documentSequence.upsert({
+      where: { type: "PURCHASE_ORDER" },
+      create: { type: "PURCHASE_ORDER", lastValue: 1001 },
+      update: { lastValue: { increment: 1 } }
+    });
+    const documentNumber = `${DOC_PREFIX.PURCHASE_ORDER}-${seq.lastValue}`;
+
+    const doc = await tx.document.create({
+      data: {
+        type: "PURCHASE_ORDER",
+        documentNumber,
+        status: "OPEN",
+        vendorId: input.vendorId,
+        issueDate: now,
+        discountAmount: input.discountAmount ?? null,
+        notes: input.notes ?? null,
+        createdById,
+        lineItems: {
+          // lineStatus is inert on a PO line (memo-line resolution is a Memo Out
+          // concept and can't even represent RESERVED) — the neutral IN_STOCK.
+          create: lines.map((l) => ({
+            inventoryItemId: l.itemId,
+            lineStatus: "IN_STOCK" as const,
+            quantity: l.quantity,
+            caratWeight: l.caratWeight,
+            unitPrice: l.unitPrice,
+            totalPrice: l.totalPrice
+          }))
+        }
+      }
+    });
     return doc.id;
   });
 

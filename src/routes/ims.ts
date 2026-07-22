@@ -6,6 +6,7 @@ import {
   ImsCreateClientSchema,
   ImsCreateDocumentSchema,
   ImsCreateInventoryItemSchema,
+  ImsCreatePurchaseOrderSchema,
   ImsCreateVocabularySchema,
   ImsDocumentIdsSchema,
   ImsDocumentQuerySchema,
@@ -25,6 +26,7 @@ import {
 import { getDocumentByIdFromDb, listDocumentsFromDb } from "../modules/ims/documents.reads";
 import {
   createOutboundDocument,
+  createPurchaseOrder,
   emailDocuments,
   quickbooksSyncDocuments,
   recordMemoReturn
@@ -321,6 +323,26 @@ imsRouter.post(
       return;
     }
     const result = await createOutboundDocument(parsed.data, req.user!.id);
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.status(201).json(result.document);
+  })
+);
+
+// Create a Purchase Order — vendor-addressed, cost-priced, no item-status move
+// (see documents.service). Static path, so it precedes the "/documents/:id/*"
+// param routes below.
+imsRouter.post(
+  "/documents/purchase-order",
+  wrap(async (req, res) => {
+    const parsed = ImsCreatePurchaseOrderSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid purchase order payload" });
+      return;
+    }
+    const result = await createPurchaseOrder(parsed.data, req.user!.id);
     if (!result.ok) {
       res.status(400).json({ error: result.error });
       return;
