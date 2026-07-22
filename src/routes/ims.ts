@@ -1,10 +1,15 @@
 import { Router, type Request, type Response } from "express";
 
-import { ImsCreateDocumentSchema, ImsDocumentQuerySchema, ImsInventoryQuerySchema } from "@/contract";
+import {
+  ImsCreateDocumentSchema,
+  ImsDocumentQuerySchema,
+  ImsInventoryQuerySchema,
+  ImsRecordReturnSchema
+} from "@/contract";
 
 import { requireAdmin } from "../middleware/auth";
 import { getDocumentByIdFromDb, listDocumentsFromDb } from "../modules/ims/documents.reads";
-import { createOutboundDocument } from "../modules/ims/documents.service";
+import { createOutboundDocument, recordMemoReturn } from "../modules/ims/documents.service";
 import {
   getInventoryItemByIdFromDb,
   getVendorByIdFromDb,
@@ -121,5 +126,25 @@ imsRouter.post(
       return;
     }
     res.status(201).json(result.document);
+  })
+);
+
+// Record a return against a Memo Out — creates a linked RETURN_MEMO_OUT, sends
+// the returned stones back to IN_STOCK, and auto-closes the memo if nothing is
+// left out. Returns both the new return doc and the updated memo.
+imsRouter.post(
+  "/documents/:id/return",
+  wrap(async (req, res) => {
+    const parsed = ImsRecordReturnSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid return payload" });
+      return;
+    }
+    const result = await recordMemoReturn(req.params.id, parsed.data, req.user!.id);
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.status(201).json({ returnDocument: result.returnDocument, memo: result.memo });
   })
 );

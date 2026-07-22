@@ -1,5 +1,6 @@
 import { Prisma, prisma } from "@/db";
-import type { ImsCreateDocument, ImsDocument } from "@/contract";
+import type { CloseReason as PrismaCloseReason } from "@/db";
+import type { ImsCreateDocument, ImsDocument, ImsRecordReturn } from "@/contract";
 
 import {
   ALLOWED_SOURCE_STATUS,
@@ -12,6 +13,10 @@ import { IMS_DOC_INCLUDE, prismaDocToDto } from "./documents.mappers";
 
 export type CreateDocumentResult =
   | { ok: true; document: ImsDocument }
+  | { ok: false; error: string };
+
+export type RecordReturnResult =
+  | { ok: true; returnDocument: ImsDocument; memo: ImsDocument }
   | { ok: false; error: string };
 
 type ItemWithDetails = Prisma.InventoryItemGetPayload<{
@@ -170,4 +175,133 @@ export async function createOutboundDocument(
     include: IMS_DOC_INCLUDE
   });
   return { ok: true, document: prismaDocToDto(created) };
+}
+
+// Record a return against an OPEN Memo Out (admin #0025 / recordMemoReturn):
+// create a linked RETURN_MEMO_OUT, resolve the returned memo lines
+// (lineStatus RETURNED + resolvedByDocument = the return), put each returned
+// stone back to IN_STOCK with an audit row, and auto-close the memo only once no
+// line is still ON_MEMO (a partial return leaves it OPEN).
+//
+// Lifecycle note: a memo return sends the stone back to IN_STOCK (it was never
+// sold — it's simply back and available to memo/sell again). visibleOnPortal is
+// left as-is (staff re-list deliberately). The distinct ItemStatus.RETURNED is
+// reserved for a future post-sale return. Flagged for Jennifer's lifecycle
+// rulebook sign-off (memory: #0025).
+export async function recordMemoReturn(
+  memoId: string,
+  input: ImsRecordReturn,
+  changedById: string
+): Promise<RecordReturnResult> {
+  const memo = await prisma.document.findUnique({
+    where: { id: memoId },
+    include: { lineItems: true }
+  });
+  if (!memo) return { ok: false, error: "Memo not found" };
+  if (memo.type !== "MEMO_OUT") return { ok: false, error: "Document is not a Memo Out" };
+
+  const onMemoLines = memo.lineItems.filter((l) => l.lineStatus === "ON_MEMO");
+  if (onMemoLines.length === 0) {
+    return { ok: false, error: "This memo has no stones still out to return" };
+  }
+
+  // Which lines to return: the named items, else everything still out.
+  let targetLines = onMemoLines;
+  if (input.inventoryItemIds && input.inventoryItemIds.length > 0) {
+    const wanted = new Set(input.inventoryItemIds);
+    targetLines = onMemoLines.filter((l) => wanted.has(l.inventoryItemId));
+    const returnable = new Set(onMemoLines.map((l) => l.inventoryItemId));
+    const bad = input.inventoryItemIds.filter((id) => !returnable.has(id));
+    if (bad.length > 0) {
+      return { ok: false, error: `Not on this memo / already resolved: ${bad.join(", ")}` };
+    }
+  }
+  if (targetLines.length === 0) return { ok: false, error: "No matching stones to return" };
+
+  const returnedLineIds = new Set(targetLines.map((l) => l.id));
+
+  const returnDocId = await prisma.$transaction(async (tx) => {
+    const seq = await tx.documentSequence.upsert({
+      where: { type: "RETURN_MEMO_OUT" },
+      create: { type: "RETURN_MEMO_OUT", lastValue: 1001 },
+      update: { lastValue: { increment: 1 } }
+    });
+    const documentNumber = `${DOC_PREFIX.RETURN_MEMO_OUT}-${seq.lastValue}`;
+
+    // The return doc is born CLOSED (a return is never "open") with its own
+    // RETURNED lines — returnedItemIds derives from these.
+    const returnDoc = await tx.document.create({
+      data: {
+        type: "RETURN_MEMO_OUT",
+        documentNumber,
+        status: "CLOSED",
+        clientId: memo.clientId,
+        parentDocumentId: memo.id,
+        issueDate: new Date(),
+        createdById: changedById,
+        lineItems: {
+          create: targetLines.map((l) => ({
+            inventoryItemId: l.inventoryItemId,
+            lineStatus: "RETURNED" as const
+          }))
+        }
+      }
+    });
+
+    // Resolve the memo lines and send each stone back to stock (with an audit row).
+    for (const line of targetLines) {
+      await tx.documentLineItem.update({
+        where: { id: line.id },
+        data: { lineStatus: "RETURNED", resolvedByDocumentId: returnDoc.id }
+      });
+      const item = await tx.inventoryItem.findUniqueOrThrow({
+        where: { id: line.inventoryItemId }
+      });
+      await tx.inventoryItem.update({
+        where: { id: line.inventoryItemId },
+        data: { status: "IN_STOCK" }
+      });
+      await tx.itemStatusHistory.create({
+        data: {
+          inventoryItemId: line.inventoryItemId,
+          previousStatus: item.status,
+          newStatus: "IN_STOCK",
+          documentId: returnDoc.id,
+          changedById
+        }
+      });
+    }
+
+    // Recompute the memo's disposition from ALL its lines' final state.
+    const finalStatuses = memo.lineItems.map((l) =>
+      returnedLineIds.has(l.id) ? "RETURNED" : l.lineStatus
+    );
+    const stillOut = finalStatuses.filter((s) => s === "ON_MEMO").length;
+    const returnedCount = finalStatuses.filter((s) => s === "RETURNED").length;
+    const soldCount = finalStatuses.filter((s) => s === "SOLD").length;
+    const allResolved = stillOut === 0;
+    const closeReason: PrismaCloseReason | null = !allResolved
+      ? null
+      : returnedCount > 0 && soldCount > 0
+        ? "MIXED"
+        : soldCount > 0
+          ? "SOLD"
+          : "RETURNED";
+    await tx.document.update({
+      where: { id: memo.id },
+      data: { status: allResolved ? "CLOSED" : "OPEN", closeReason }
+    });
+
+    return returnDoc.id;
+  });
+
+  const [returnDocument, updatedMemo] = await Promise.all([
+    prisma.document.findUniqueOrThrow({ where: { id: returnDocId }, include: IMS_DOC_INCLUDE }),
+    prisma.document.findUniqueOrThrow({ where: { id: memo.id }, include: IMS_DOC_INCLUDE })
+  ]);
+  return {
+    ok: true,
+    returnDocument: prismaDocToDto(returnDocument),
+    memo: prismaDocToDto(updatedMemo)
+  };
 }

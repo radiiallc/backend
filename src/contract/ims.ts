@@ -307,3 +307,11 @@ export const ImsCreateDocumentSchema = z.object({
   notes: z.string().optional()
 });
 export type ImsCreateDocument = z.infer<typeof ImsCreateDocumentSchema>;
+
+// Record a return against an open Memo Out (admin #0025 / recordMemoReturn).
+// Omit inventoryItemIds (or send []) to return every stone still ON_MEMO;
+// otherwise return just the named ones (a partial return leaves the memo OPEN).
+export const ImsRecordReturnSchema = z.object({
+  inventoryItemIds: z.array(z.string().min(1)).optional()
+});
+export type ImsRecordReturn = z.infer<typeof ImsRecordReturnSchema>;
