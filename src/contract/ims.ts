@@ -35,6 +35,12 @@ export const ItemStatusSchema = z.enum([
 ]);
 export type ItemStatus = z.infer<typeof ItemStatusSchema>;
 
+// Back-office CLIENT (a portal Company doubles as the "Client", baseline D4)
+// approval lifecycle — admin #0045. PENDING → ACTIVE|DECLINED; ACTIVE ⇄
+// DEACTIVATED. Distinct from the per-user UserStatus.
+export const ClientStatusSchema = z.enum(["PENDING", "ACTIVE", "DECLINED", "DEACTIVATED"]);
+export type ClientStatus = z.infer<typeof ClientStatusSchema>;
+
 // ── Per-type detail groups ───────────────────────────────────────────────────
 
 // Diamonds + gems share this shape (discriminated by naturalOrLab / gemType).
@@ -470,3 +476,101 @@ export const ImsDocumentIdsSchema = z.object({
   documentIds: z.array(z.string().min(1)).min(1)
 });
 export type ImsDocumentIds = z.infer<typeof ImsDocumentIdsSchema>;
+
+// ── Clients (back-office accounts) ───────────────────────────────────────────
+// A portal Company IS the back-office Client (baseline D4). These DTOs re-expose
+// it in the shape the admin's Clients tab renders: contact + shipping, the three
+// portal markups, credit + default terms, QuickBooks link, staff-only internal
+// notes, and the approval lifecycle status. `openDocumentCount` (the admin's
+// "open: N") is derived — open client documents held against this account.
+
+export const ImsClientSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  contactName: z.string().nullable(),
+  contactEmail: z.string().nullable(),
+  contactPhone: z.string().nullable(),
+  website: z.string().nullable(),
+  shippingAddress: z.string().nullable(),
+  clientStatus: ClientStatusSchema,
+  creditLimitUsd: z.number(),
+  gemstoneMarkupPct: z.number(),
+  labDiamondMarkupPct: z.number(),
+  naturalDiamondMarkupPct: z.number(),
+  defaultMemoTermsDays: z.number().nullable(),
+  defaultInvoiceTermsDays: z.number().nullable(),
+  quickbooksId: z.string().nullable(),
+  // Staff-only note (admin #0045) — never shown to the portal client.
+  internalNotes: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  // Derived: open documents (memo/invoice) currently held against this client.
+  openDocumentCount: z.number()
+});
+export type ImsClient = z.infer<typeof ImsClientSchema>;
+
+export const ImsClientQuerySchema = z.object({
+  status: ClientStatusSchema.optional(),
+  // Free-text over name / contactEmail / contactName (case-insensitive contains).
+  q: z.string().trim().min(1).optional()
+});
+export type ImsClientQuery = z.infer<typeof ImsClientQuerySchema>;
+
+// Manually add a back-office client (admin "New client" / saveClient). Only the
+// name is required; a staff-added account lands ACTIVE (portal self-signups land
+// PENDING via the portal auth path, not this endpoint). clientStatus is NOT
+// settable here — it moves only through the lifecycle endpoint below.
+export const ImsCreateClientSchema = z.object({
+  name: z.string().trim().min(1),
+  contactName: z.string().nullable().optional(),
+  contactEmail: z.string().nullable().optional(),
+  contactPhone: z.string().nullable().optional(),
+  website: z.string().nullable().optional(),
+  shippingAddress: z.string().nullable().optional(),
+  internalNotes: z.string().optional(),
+  creditLimitUsd: z.number().nonnegative().optional(),
+  gemstoneMarkupPct: z.number().nonnegative().optional(),
+  labDiamondMarkupPct: z.number().nonnegative().optional(),
+  naturalDiamondMarkupPct: z.number().nonnegative().optional(),
+  defaultMemoTermsDays: z.number().int().positive().nullable().optional(),
+  defaultInvoiceTermsDays: z.number().int().positive().nullable().optional(),
+  quickbooksId: z.string().nullable().optional()
+});
+export type ImsCreateClient = z.infer<typeof ImsCreateClientSchema>;
+
+// Patch a client's core account fields (admin edit + the staff internalNotes
+// field). clientStatus is deliberately absent — approval moves only through the
+// lifecycle endpoint. null clears a nullable field; an absent key is unchanged.
+export const ImsUpdateClientSchema = z.object({
+  name: z.string().trim().min(1).optional(),
+  contactName: z.string().nullable().optional(),
+  contactEmail: z.string().nullable().optional(),
+  contactPhone: z.string().nullable().optional(),
+  website: z.string().nullable().optional(),
+  shippingAddress: z.string().nullable().optional(),
+  internalNotes: z.string().optional(),
+  creditLimitUsd: z.number().nonnegative().optional(),
+  gemstoneMarkupPct: z.number().nonnegative().optional(),
+  labDiamondMarkupPct: z.number().nonnegative().optional(),
+  naturalDiamondMarkupPct: z.number().nonnegative().optional(),
+  defaultMemoTermsDays: z.number().int().positive().nullable().optional(),
+  defaultInvoiceTermsDays: z.number().int().positive().nullable().optional(),
+  quickbooksId: z.string().nullable().optional()
+});
+export type ImsUpdateClient = z.infer<typeof ImsUpdateClientSchema>;
+
+// Move a client through its approval lifecycle (admin approve/decline/
+// deactivate/reactivate). The verb — not a raw target status — because `approve`
+// carries the portal-markups guard (a signup lands with 0 markups) that a bare
+// "set ACTIVE" wouldn't. The service validates the (current → action) pair:
+// approve/decline from PENDING, deactivate from ACTIVE, reactivate from DEACTIVATED.
+export const ClientLifecycleActionSchema = z.enum([
+  "approve",
+  "decline",
+  "deactivate",
+  "reactivate"
+]);
+export type ClientLifecycleAction = z.infer<typeof ClientLifecycleActionSchema>;
+
+export const ImsClientLifecycleSchema = z.object({ action: ClientLifecycleActionSchema });
+export type ImsClientLifecycle = z.infer<typeof ImsClientLifecycleSchema>;

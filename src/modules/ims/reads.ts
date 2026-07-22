@@ -1,5 +1,7 @@
 import { Prisma, prisma } from "@/db";
 import type {
+  ImsClient,
+  ImsClientQuery,
   ImsInventoryItem,
   ImsInventoryQuery,
   ImsVendor,
@@ -7,8 +9,10 @@ import type {
 } from "@/contract";
 
 import {
+  IMS_CLIENT_INCLUDE,
   IMS_ITEM_INCLUDE,
   IMS_VENDOR_INCLUDE,
+  prismaClientToDto,
   prismaItemToDto,
   prismaVendorToDto,
   prismaVocabToDto
@@ -71,4 +75,34 @@ export async function listVocabularyFromDb(kind?: string): Promise<ImsVocabulary
     orderBy: [{ kind: "asc" }, { value: "asc" }]
   });
   return values.map(prismaVocabToDto);
+}
+
+// ── Clients ───────────────────────────────────────────────────────────────────
+
+function buildClientWhere(query: ImsClientQuery): Prisma.CompanyWhereInput {
+  const where: Prisma.CompanyWhereInput = {};
+  if (query.status) where.clientStatus = query.status;
+  if (query.q) {
+    const contains = { contains: query.q, mode: "insensitive" as const };
+    where.OR = [{ name: contains }, { contactEmail: contains }, { contactName: contains }];
+  }
+  return where;
+}
+
+export async function listClientsFromDb(query: ImsClientQuery): Promise<ImsClient[]> {
+  const clients = await prisma.company.findMany({
+    where: buildClientWhere(query),
+    include: IMS_CLIENT_INCLUDE,
+    // Most recent signup first — the admin surfaces new PENDING accounts to review.
+    orderBy: { createdAt: "desc" }
+  });
+  return clients.map(prismaClientToDto);
+}
+
+export async function getClientByIdFromDb(id: string): Promise<ImsClient | null> {
+  const client = await prisma.company.findUnique({
+    where: { id },
+    include: IMS_CLIENT_INCLUDE
+  });
+  return client ? prismaClientToDto(client) : null;
 }

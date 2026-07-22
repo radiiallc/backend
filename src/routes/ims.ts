@@ -1,6 +1,9 @@
 import { Router, type Request, type Response } from "express";
 
 import {
+  ImsClientLifecycleSchema,
+  ImsClientQuerySchema,
+  ImsCreateClientSchema,
   ImsCreateDocumentSchema,
   ImsCreateInventoryItemSchema,
   ImsCreateVocabularySchema,
@@ -9,10 +12,16 @@ import {
   ImsInventoryQuerySchema,
   ImsRecordReturnSchema,
   ImsReserveItemSchema,
+  ImsUpdateClientSchema,
   ImsUpdateInventoryItemSchema
 } from "@/contract";
 
 import { requireAdmin } from "../middleware/auth";
+import {
+  createClient,
+  transitionClientStatus,
+  updateClient
+} from "../modules/ims/clients.service";
 import { getDocumentByIdFromDb, listDocumentsFromDb } from "../modules/ims/documents.reads";
 import {
   createOutboundDocument,
@@ -27,8 +36,10 @@ import {
   updateInventoryItem
 } from "../modules/ims/inventory.service";
 import {
+  getClientByIdFromDb,
   getInventoryItemByIdFromDb,
   getVendorByIdFromDb,
+  listClientsFromDb,
   listInventoryFromDb,
   listVendorsFromDb,
   listVocabularyFromDb
@@ -162,6 +173,90 @@ imsRouter.get(
       return;
     }
     res.json(vendor);
+  })
+);
+
+// ── Clients (back-office accounts) ──────────────────────────────────────────
+imsRouter.get(
+  "/clients",
+  wrap(async (req, res) => {
+    const parsed = ImsClientQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid query params" });
+      return;
+    }
+    res.json(await listClientsFromDb(parsed.data));
+  })
+);
+
+imsRouter.get(
+  "/clients/:id",
+  wrap(async (req, res) => {
+    const client = await getClientByIdFromDb(req.params.id);
+    if (!client) {
+      res.status(404).json({ error: "Client not found" });
+      return;
+    }
+    res.json(client);
+  })
+);
+
+// Manually add a back-office client (admin "New client"). Lands ACTIVE; portal
+// self-signups land PENDING via the portal auth path, not here.
+imsRouter.post(
+  "/clients",
+  wrap(async (req, res) => {
+    const parsed = ImsCreateClientSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid client payload" });
+      return;
+    }
+    const result = await createClient(parsed.data);
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.status(201).json(result.client);
+  })
+);
+
+// Edit a client's account fields + staff internal notes. clientStatus is not
+// patchable here — it moves only through the lifecycle endpoint below.
+imsRouter.patch(
+  "/clients/:id",
+  wrap(async (req, res) => {
+    const parsed = ImsUpdateClientSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid client payload" });
+      return;
+    }
+    const result = await updateClient(req.params.id, parsed.data);
+    if (!result.ok) {
+      const code = result.error === "Client not found" ? 404 : 400;
+      res.status(code).json({ error: result.error });
+      return;
+    }
+    res.json(result.client);
+  })
+);
+
+// Approve / decline / deactivate / reactivate a client (admin #0045). The verb
+// carries the transition rules (approve also requires portal markups be set).
+imsRouter.post(
+  "/clients/:id/status",
+  wrap(async (req, res) => {
+    const parsed = ImsClientLifecycleSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid lifecycle payload" });
+      return;
+    }
+    const result = await transitionClientStatus(req.params.id, parsed.data.action);
+    if (!result.ok) {
+      const code = result.error === "Client not found" ? 404 : 400;
+      res.status(code).json({ error: result.error });
+      return;
+    }
+    res.json(result.client);
   })
 );
 

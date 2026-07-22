@@ -6,6 +6,7 @@ import type {
   VocabularyValue as PrismaVocabularyValue
 } from "@/db";
 import type {
+  ImsClient,
   ImsInventoryItem,
   ImsJewelryDetail,
   ImsOtherMaterialDetail,
@@ -184,4 +185,39 @@ export function prismaVendorToDto(v: PrismaVendorWithCount): ImsVendor {
 
 export function prismaVocabToDto(v: PrismaVocabularyValue): ImsVocabularyValue {
   return { id: v.id, kind: v.kind, value: v.value };
+}
+
+// ── Clients (back-office accounts) ───────────────────────────────────────────
+
+// A client carries a derived count of open documents held against it (the
+// admin's "open: N"). Filtered relation count keeps it a single query.
+export const IMS_CLIENT_INCLUDE = {
+  _count: { select: { clientDocuments: { where: { status: "OPEN" } } } }
+} satisfies Prisma.CompanyInclude;
+
+type PrismaClientWithCount = Prisma.CompanyGetPayload<{ include: typeof IMS_CLIENT_INCLUDE }>;
+
+export function prismaClientToDto(c: PrismaClientWithCount): ImsClient {
+  return {
+    id: c.id,
+    name: c.name,
+    contactName: c.contactName,
+    contactEmail: c.contactEmail,
+    contactPhone: c.contactPhone,
+    website: c.website,
+    shippingAddress: c.shippingAddress,
+    clientStatus: c.clientStatus,
+    // Non-nullable Decimals (schema defaults 0) → plain numbers.
+    creditLimitUsd: decOrNull(c.creditLimitUsd) ?? 0,
+    gemstoneMarkupPct: decOrNull(c.gemstoneMarkupPct) ?? 0,
+    labDiamondMarkupPct: decOrNull(c.labDiamondMarkupPct) ?? 0,
+    naturalDiamondMarkupPct: decOrNull(c.naturalDiamondMarkupPct) ?? 0,
+    defaultMemoTermsDays: c.defaultMemoTermsDays,
+    defaultInvoiceTermsDays: c.defaultInvoiceTermsDays,
+    quickbooksId: c.quickbooksId,
+    internalNotes: c.internalNotes,
+    createdAt: c.createdAt.toISOString(),
+    updatedAt: c.updatedAt.toISOString(),
+    openDocumentCount: c._count.clientDocuments
+  };
 }
