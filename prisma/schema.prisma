@@ -11,6 +11,7 @@ datasource db {
 model Company {
   id                      String          @id @default(cuid())
   name                    String
+  contactName             String? // back-office client contact person (admin client.contact)
   contactEmail            String?
   contactPhone            String?
   website                 String?
@@ -20,19 +21,35 @@ model Company {
   gemstoneMarkupPct       Decimal         @default(0) @db.Decimal(6, 2)
   labDiamondMarkupPct     Decimal         @default(0) @db.Decimal(6, 2)
   naturalDiamondMarkupPct Decimal         @default(0) @db.Decimal(6, 2)
+  // IMS: back-office client attributes (a portal Company doubles as the "Client", baseline D4).
+  clientStatus            ClientStatus    @default(PENDING) // portal-signup approval lifecycle (admin #0045)
+  defaultMemoTermsDays    Int? // pre-fills Memo Out dueDate for this client (default 7d)
+  defaultInvoiceTermsDays Int? // pre-fills Invoice dueDate for this client
+  quickbooksId            String? // set once the customer is pushed to QuickBooks
   createdAt               DateTime        @default(now())
   updatedAt               DateTime        @updatedAt
   users                   User[]
   requests                Request[]
-  // IMS: a portal Company doubles as the back-office "Client" (baseline D4).
   brandOwnedItems         InventoryItem[] @relation("BrandOwnedItems")
   reservedItems           InventoryItem[] @relation("ReservedItems")
   clientDocuments         Document[]      @relation("ClientDocuments")
+
+  @@index([clientStatus])
 }
 
 enum UserStatus {
   PENDING
   APPROVED
+  DECLINED
+  DEACTIVATED
+}
+
+// Back-office CLIENT (Company) approval lifecycle — distinct from UserStatus:
+// admin #0045 uses ACTIVE (not APPROVED), and a client can be DEACTIVATED
+// independently of any single portal user. PENDING -> ACTIVE|DECLINED; ACTIVE <-> DEACTIVATED.
+enum ClientStatus {
+  PENDING
+  ACTIVE
   DECLINED
   DEACTIVATED
 }
@@ -326,13 +343,16 @@ model IngestRun {
 // status or document — it folds into Memo Out + a variable due-term
 // (docs/WORKPLAN.md §1.4, memory: consignment-dropped).
 //
-// Vocabulary policy: only truly-closed sets are Prisma enums. Open or
-// category-divergent lists (Shape, Color, Clarity, Pol/Symm, Fluo, Lab,
-// Treatment, Origin, Jewelry Type, Metal, Category, Material Type) live in the
-// self-growing `VocabularyValue` table + a forgiving importer, so a per-category
-// list can diverge (diamond Lab != gem Lab; jewelry Metal != other Metal) and
-// any staffer can add a value. Detail tables store the resolved canonical
-// string, mirroring how the feed catalogs (Gemstone/Diamond) store raw strings.
+// Vocabulary policy: only truly-closed sets are Prisma enums. Open lists live in
+// the self-growing `VocabularyValue` table + a forgiving importer, so any staffer
+// can add a value. Per the admin shell (the requirements source of truth) these
+// are SHARED lists keyed by `kind` — the admin ships 11: gem, shape, color,
+// clarity, cut, lab, origin, treat, metal, jtype, brand (ONE `metal` list for
+// jewelry AND other materials; ONE `lab` list across diamonds AND gems — NOT the
+// per-category divergent lists baseline §5 first proposed). Detail tables store
+// the resolved canonical string, mirroring how the feed catalogs
+// (Gemstone/Diamond) store raw strings. Fields the admin does NOT vocab-back
+// (polish, symmetry, fluorescence, girdle) stay plain strings.
 // ============================================================================
 
 enum ItemType {
@@ -387,22 +407,31 @@ enum LineStatus {
   RETURNED
 }
 
+// Why a Memo Out closed (admin recordMemoReturn): every line returned, every
+// line sold, or a mix. Null while the memo is still OPEN.
+enum CloseReason {
+  RETURNED
+  SOLD
+  MIXED
+}
+
 // The single standardized supplier entity ("Vendor" == "Supplier"; upstream
 // feed providers Fantasy/Skylab/Disons are "feed sources", not Vendors).
 model Vendor {
-  id                   String          @id @default(cuid())
-  name                 String          @unique
-  contactName          String?
-  contactEmail         String?
-  contactPhone         String?
-  address              String?
-  defaultMemoTermsDays Int? // pre-fills Memo In/Out dueDate (default 7d, extendable ~60d)
-  quickbooksId         String?
-  notes                String          @default("")
-  createdAt            DateTime        @default(now())
-  updatedAt            DateTime        @updatedAt
-  inventoryItems       InventoryItem[]
-  documents            Document[]
+  id                      String          @id @default(cuid())
+  name                    String          @unique
+  contactName             String?
+  contactEmail            String?
+  contactPhone            String?
+  address                 String?
+  defaultMemoTermsDays    Int? // pre-fills Memo In/Out dueDate (default 7d, extendable ~60d)
+  defaultInvoiceTermsDays Int? // pre-fills Bill In / PO dueDate for this vendor
+  quickbooksId            String?
+  notes                   String          @default("")
+  createdAt               DateTime        @default(now())
+  updatedAt               DateTime        @updatedAt
+  inventoryItems          InventoryItem[]
+  documents               Document[]
 
   @@index([name])
 }
@@ -413,6 +442,7 @@ model InventoryItem {
   id                  String       @id @default(cuid())
   sku                 String       @unique // RADIIA SKU (auto-generated)
   vendorSku           String? // vendor's own stock number (all 4 tabs)
+  itemName            String? // admin's SHARED Identification field for every type
   itemType            ItemType
   itemSubtype         ItemSubtype? // stones only (= Lot Type)
   status              ItemStatus   @default(IN_STOCK) // set only via documents
@@ -489,10 +519,9 @@ model JewelryDetail {
   inventoryItemId  String        @unique
   inventoryItem    InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
   jewelryItemType  String // = Jewelry type (reference vocab)
-  itemName         String // = Item name
   description      String?
-  quantity         Int // = Qty
-  metal            String // = Metal (reference vocab; != other-materials Metal)
+  quantity         Int           @default(1) // = Qty
+  metal            String // = Metal (shared `metal` vocab, same list as other materials)
   lengthMm         Decimal?      @db.Decimal(10, 3)
   ringSize         String? // = Size (generalized beyond ring size)
   mm               Decimal?      @db.Decimal(10, 3)
@@ -511,11 +540,10 @@ model OtherMaterialDetail {
   id              String        @id @default(cuid())
   inventoryItemId String        @unique
   inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
-  category        String // two-level: Findings | Mountings (reference vocab)
-  subtype         String // = Material type (conditional on category, reference vocab)
-  itemName        String // = Item name
-  quantity        Int // = Qty
-  metalType       String // = Metal (reference vocab; != jewelry Metal list)
+  category        String? // OPTIONAL two-level grouping: Findings | Mountings (vocab `other_category`)
+  subtype         String // = Material type (vocab `other_material_type`; admin's flat sub2, generalized)
+  quantity        Int           @default(1) // = Qty
+  metalType       String // = Metal (shared `metal` vocab, same list as jewelry)
   lengthMm        Decimal?      @db.Decimal(10, 3)
   size            String?
   mm              Decimal?      @db.Decimal(10, 3)
@@ -533,51 +561,62 @@ model OtherMaterialDetail {
 // carry a documentNumber we mint. Inbound docs use the vendor's own number in
 // externalReference and leave documentNumber null.
 model Document {
-  id                String              @id @default(cuid())
-  type              DocumentType
-  documentNumber    String?             @unique // only for docs WE originate
-  externalReference String? // vendor's own bill/memo number (inbound)
-  status            DocumentStatus      @default(OPEN)
-  vendorId          String?
-  vendor            Vendor?             @relation(fields: [vendorId], references: [id])
-  clientId          String?
-  client            Company?            @relation("ClientDocuments", fields: [clientId], references: [id])
-  issueDate         DateTime            @default(now())
-  dueDate           DateTime? // Memo In/Out due-term (default 7d, extendable ~60d)
-  discountAmount    Decimal?            @db.Decimal(12, 2)
-  notes             String?
-  createdById       String
-  createdBy         User                @relation(fields: [createdById], references: [id])
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @updatedAt
-  lineItems         DocumentLineItem[]
-  statusHistory     ItemStatusHistory[]
+  id                 String              @id @default(cuid())
+  type               DocumentType
+  documentNumber     String?             @unique // only for docs WE originate
+  externalReference  String? // vendor's own bill/memo number (inbound)
+  status             DocumentStatus      @default(OPEN)
+  vendorId           String?
+  vendor             Vendor?             @relation(fields: [vendorId], references: [id])
+  clientId           String?
+  client             Company?            @relation("ClientDocuments", fields: [clientId], references: [id])
+  issueDate          DateTime            @default(now())
+  dueDate            DateTime? // Memo In/Out due-term (default 7d, extendable ~60d)
+  discountAmount     Decimal?            @db.Decimal(12, 2)
+  notes              String?
+  emailedAt          DateTime? // set when the doc PDF is emailed to the party (admin sendEmail)
+  quickbooksSyncedAt DateTime? // null = unsynced; set on QuickBooks push (admin _runSync)
+  closeReason        CloseReason? // for a closed Memo Out: all-returned / all-sold / mixed
+  parentDocumentId   String? // RETURN_MEMO_OUT / RETURN_MEMO_IN -> its originating memo
+  parentDocument     Document?           @relation("DocumentReturns", fields: [parentDocumentId], references: [id])
+  childDocuments     Document[]          @relation("DocumentReturns")
+  createdById        String
+  createdBy          User                @relation(fields: [createdById], references: [id])
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  lineItems          DocumentLineItem[]  @relation("DocumentLines")
+  resolvedLineItems  DocumentLineItem[]  @relation("LineResolutions")
+  statusHistory      ItemStatusHistory[]
 
   @@index([type])
   @@index([status])
   @@index([vendorId])
   @@index([clientId])
   @@index([externalReference])
+  @@index([parentDocumentId])
 }
 
 model DocumentLineItem {
-  id              String        @id @default(cuid())
-  documentId      String
-  document        Document      @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  inventoryItemId String
-  inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id])
-  lineStatus      LineStatus
-  quantity        Int?
-  caratWeight     Decimal?      @db.Decimal(10, 3)
-  unitPrice       Decimal?      @db.Decimal(12, 2)
-  totalPrice      Decimal?      @db.Decimal(12, 2)
-  discountAmount  Decimal?      @db.Decimal(12, 2)
-  clientReference String?
-  notes           String?
-  createdAt       DateTime      @default(now())
+  id                   String        @id @default(cuid())
+  documentId           String
+  document             Document      @relation("DocumentLines", fields: [documentId], references: [id], onDelete: Cascade)
+  inventoryItemId      String
+  inventoryItem        InventoryItem @relation(fields: [inventoryItemId], references: [id])
+  lineStatus           LineStatus // per-stone resolution: ON_MEMO=still out, SOLD, RETURNED
+  resolvedByDocumentId String? // RETURN/INVOICE doc that resolved this memo line (admin returnDocId)
+  resolvedByDocument   Document?     @relation("LineResolutions", fields: [resolvedByDocumentId], references: [id])
+  quantity             Int?
+  caratWeight          Decimal?      @db.Decimal(10, 3)
+  unitPrice            Decimal?      @db.Decimal(12, 2)
+  totalPrice           Decimal?      @db.Decimal(12, 2)
+  discountAmount       Decimal?      @db.Decimal(12, 2)
+  clientReference      String?
+  notes                String?
+  createdAt            DateTime      @default(now())
 
   @@index([documentId])
   @@index([inventoryItemId])
+  @@index([resolvedByDocumentId])
 }
 
 // Full audit trail: item lifecycle status only ever changes through a document.
@@ -605,11 +644,12 @@ model DocumentSequence {
   lastValue Int          @default(1000)
 }
 
-// Self-growing reference vocabulary (pick-or-add). `kind` names the list
-// (e.g. DIAMOND_SHAPE, GEM_COLOR, DIAMOND_LAB, GEM_LAB, JEWELRY_METAL,
-// OTHER_METAL, JEWELRY_TYPE, OTHER_CATEGORY, OTHER_MATERIAL_TYPE, FLUORESCENCE,
-// TREATMENT, ORIGIN). Any staffer may add a value; the importer/form dedups
-// case-insensitively before creating.
+// Self-growing reference vocabulary (pick-or-add). `kind` names the list. The
+// admin ships 11 SHARED kinds: gem, shape, color, clarity, cut, lab, origin,
+// treat, metal, jtype, brand. The backend adds two for the generalized two-level
+// other-materials picker: other_category, other_material_type (the admin still
+// hardcodes those as a flat sub2 list). Any staffer may add a value; the
+// importer/form dedups case-insensitively before creating.
 model VocabularyValue {
   id        String   @id @default(cuid())
   kind      String
