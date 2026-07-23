@@ -13,6 +13,7 @@ import {
   ImsDocumentIdsSchema,
   ImsDocumentQuerySchema,
   ImsInventoryQuerySchema,
+  ImsParseInboundCsvSchema,
   ImsRecordReturnSchema,
   ImsReserveItemSchema,
   ImsUpdateClientSchema,
@@ -50,6 +51,7 @@ import {
   listVendorsFromDb,
   listVocabularyFromDb
 } from "../modules/ims/reads";
+import { parseInventoryCsv } from "../modules/ims/csv-import";
 import { createVendor, updateVendor } from "../modules/ims/vendors.service";
 import { addVocabularyValue } from "../modules/ims/vocabulary.service";
 
@@ -412,6 +414,23 @@ imsRouter.post(
       return;
     }
     res.status(201).json(result.document);
+  })
+);
+
+// Dry-run parse of an uploaded inventory CSV (Jennifer's 7-13 template) into
+// inbound item payloads for preview — writes NOTHING. The admin previews the
+// per-row result, then POSTs the ok items to /documents/inbound (above) to
+// actually receive them. Static path, so it precedes the "/documents/:id/*"
+// param routes below.
+imsRouter.post(
+  "/documents/inbound/parse-csv",
+  wrap(async (req, res) => {
+    const parsed = ImsParseInboundCsvSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid CSV import payload" });
+      return;
+    }
+    res.json(parseInventoryCsv(parsed.data.category, parsed.data.csv));
   })
 );
 

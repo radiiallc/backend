@@ -522,6 +522,10 @@ export type ImsCreatePurchaseOrder = z.infer<typeof ImsCreatePurchaseOrderSchema
 // standard vendor Bill In / Memo In sets no brandOwner. Status/SKU are
 // server-assigned (item enters IN_STOCK; SKU auto-minted).
 const inboundItemCoreFields = {
+  // Optional caller-supplied RADIIA SKU. Used by the bulk-CSV import to PRESERVE
+  // an existing SKU when migrating stock (the template's "RADIIA SKU" column);
+  // omitted for an ordinary receive, where the server auto-mints. Must be unique.
+  sku: z.string().optional(),
   itemName: z.string().optional(),
   vendorSku: z.string().optional(),
   notes: z.string().optional(),
@@ -566,6 +570,41 @@ export const ImsCreateInboundDocumentSchema = z.object({
   items: z.array(ImsInboundItemInputSchema).min(1)
 });
 export type ImsCreateInboundDocument = z.infer<typeof ImsCreateInboundDocumentSchema>;
+
+// ── Bulk CSV import (inbound) ────────────────────────────────────────────────
+// Dry-run parse of an uploaded inventory CSV (Jennifer's 7-13 template, one tab
+// per category) into inbound item payloads for preview. The parse writes NOTHING;
+// on confirm the admin POSTs the ok items to /ims/documents/inbound (the real
+// create). Diamonds + Gems share the STONE shape; Jewelry / Other map to their
+// detail tables. Column matching is forgiving (case/space/punctuation-insensitive,
+// with aliases) — see modules/ims/csv-import.ts.
+export const IMS_CSV_CATEGORIES = ["diamonds", "gems", "jewelry", "other"] as const;
+export const ImsCsvCategorySchema = z.enum(IMS_CSV_CATEGORIES);
+export type ImsCsvCategory = z.infer<typeof ImsCsvCategorySchema>;
+
+export const ImsParseInboundCsvSchema = z.object({
+  category: ImsCsvCategorySchema,
+  csv: z.string().min(1)
+});
+export type ImsParseInboundCsv = z.infer<typeof ImsParseInboundCsvSchema>;
+
+// One data row's outcome. `item` is the validated inbound payload when ok; `error`
+// is a friendly reason when not. `rowNumber` is 1-based over data rows (no header).
+export interface ImsCsvRowResult {
+  rowNumber: number;
+  sku: string | null;
+  ok: boolean;
+  error: string | null;
+  item: ImsInboundItemInput | null;
+}
+export interface ImsParseInboundCsvResult {
+  category: ImsCsvCategory;
+  totalRows: number;
+  okCount: number;
+  errorCount: number;
+  rows: ImsCsvRowResult[];
+  items: ImsInboundItemInput[];
+}
 
 // Batch document-id payload — shared by the "email these docs" and "sync these
 // docs to QuickBooks" actions (admin sendEmail / _runSync both act on the set of

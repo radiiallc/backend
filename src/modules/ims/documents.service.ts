@@ -389,11 +389,33 @@ export async function createInboundDocument(
     input.type === "MEMO_IN" ? vendor.defaultMemoTermsDays : vendor.defaultInvoiceTermsDays;
   const dueDate = termDays ? new Date(now.getTime() + termDays * 86_400_000) : null;
 
+  // SKU strategy: honor a caller-supplied SKU (bulk-CSV migration preserving the
+  // template's "RADIIA SKU" column); auto-mint for any item without one. Validate
+  // up front so a bad upload fails cleanly instead of half-importing.
+  const providedSkus = input.items.map((it) => (it.sku ?? "").trim() || null);
+  const providedList = providedSkus.filter((s): s is string => s !== null);
+  if (new Set(providedList).size !== providedList.length) {
+    return { ok: false, error: "The upload has duplicate RADIIA SKUs." };
+  }
+  if (providedList.length > 0) {
+    const clash = await prisma.inventoryItem.findMany({
+      where: { sku: { in: providedList } },
+      select: { sku: true }
+    });
+    if (clash.length > 0) {
+      return { ok: false, error: `SKU already in inventory: ${clash.map((c) => c.sku).join(", ")}` };
+    }
+  }
+
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const docId = await prisma.$transaction(
         async (tx) => {
-          const skus = await mintSkuBatch(tx, input.items.length);
+          // Mint only for items without a preserved SKU, then weave the two back
+          // into item order.
+          const minted = await mintSkuBatch(tx, providedSkus.filter((s) => s === null).length);
+          let mi = 0;
+          const skus = providedSkus.map((s) => s ?? minted[mi++]);
 
           const lines: Array<{ inventoryItemId: string } & ReturnType<typeof costSnapshot>> = [];
           const createdItemIds: string[] = [];
