@@ -53,6 +53,7 @@ import {
   listVocabularyFromDb
 } from "../modules/ims/reads";
 import { parseInventoryCsv } from "../modules/ims/csv-import";
+import { enrichInboundCsvWithGia } from "../modules/ims/gia-enrich";
 import { lookupGiaReport } from "../modules/ims/gia.service";
 import { createVendor, updateVendor } from "../modules/ims/vendors.service";
 import { addVocabularyValue } from "../modules/ims/vocabulary.service";
@@ -437,10 +438,11 @@ imsRouter.post(
 );
 
 // Dry-run parse of an uploaded inventory CSV (Jennifer's 7-13 template) into
-// inbound item payloads for preview — writes NOTHING. The admin previews the
-// per-row result, then POSTs the ok items to /documents/inbound (above) to
-// actually receive them. Static path, so it precedes the "/documents/:id/*"
-// param routes below.
+// inbound item payloads for preview — writes NOTHING to our DB. The admin previews
+// the per-row result, then POSTs the ok items to /documents/inbound (above) to
+// actually receive them. With `enrichGia`, each stone row's Cert No is additionally
+// looked up on GIA (a read) and its grade fields filled from the report. Static
+// path, so it precedes the "/documents/:id/*" param routes below.
 imsRouter.post(
   "/documents/inbound/parse-csv",
   wrap(async (req, res) => {
@@ -449,7 +451,8 @@ imsRouter.post(
       res.status(400).json({ error: "Invalid CSV import payload" });
       return;
     }
-    res.json(parseInventoryCsv(parsed.data.category, parsed.data.csv));
+    const result = parseInventoryCsv(parsed.data.category, parsed.data.csv);
+    res.json(parsed.data.enrichGia ? await enrichInboundCsvWithGia(result) : result);
   })
 );
 

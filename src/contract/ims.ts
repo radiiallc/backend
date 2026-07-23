@@ -584,18 +584,37 @@ export type ImsCsvCategory = z.infer<typeof ImsCsvCategorySchema>;
 
 export const ImsParseInboundCsvSchema = z.object({
   category: ImsCsvCategorySchema,
-  csv: z.string().min(1)
+  csv: z.string().min(1),
+  // Opt-in: after parsing, look each STONE row's Cert No up on GIA and fill the
+  // grade fields (4Cs, measurements, depth%/table%, cut/polish/symmetry) from the
+  // report — authoritative where GIA has a value, the CSV value kept on any miss.
+  // Off by default (parse stays a fast, network-free dry run).
+  enrichGia: z.boolean().optional()
 });
 export type ImsParseInboundCsv = z.infer<typeof ImsParseInboundCsvSchema>;
 
+// Per-row GIA enrichment outcome (only present when enrichGia was requested).
+// `enriched` = GIA filled fields; `notFound` = no such report, CSV kept;
+// `skipped` = no cert or a non-GIA lab (IGI enrichment not built yet);
+// `notConfigured` = GIA_API_KEY unset; `error` = lookup/merge failed, CSV kept.
+export type ImsCsvGiaState = "enriched" | "notFound" | "skipped" | "notConfigured" | "error";
+export interface ImsCsvGiaOutcome {
+  state: ImsCsvGiaState;
+  message: string | null;
+  reportNumber: string | null;
+  appliedFields: string[]; // stone fields set from GIA (empty unless `enriched`)
+}
+
 // One data row's outcome. `item` is the validated inbound payload when ok; `error`
 // is a friendly reason when not. `rowNumber` is 1-based over data rows (no header).
+// `gia` is set only when enrichGia was requested and the row was reached.
 export interface ImsCsvRowResult {
   rowNumber: number;
   sku: string | null;
   ok: boolean;
   error: string | null;
   item: ImsInboundItemInput | null;
+  gia?: ImsCsvGiaOutcome | null;
 }
 export interface ImsParseInboundCsvResult {
   category: ImsCsvCategory;
