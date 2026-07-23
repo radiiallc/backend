@@ -24,9 +24,20 @@ import {
 } from "@/contract";
 
 // "RADIIA SKU" → "radiiasku"; "Stone Type (Natural, Lab)" → "stonetype";
-// "Cost per carat" → "costpercarat". Drop any "(…)" hint, then keep a–z0–9.
+// "Cost per carat" → "costpercarat". Drop any "(…)" hint, keep a–z0–9. "%" → "pct"
+// FIRST, so "Depth %" → "depthpct" stays distinct from the "Depth" (mm) column
+// (both would otherwise collapse to "depth"); likewise "Table %" → "tablepct".
 function normalizeHeader(h: string): string {
-  return h.split("(")[0].toLowerCase().replace(/[^a-z0-9]/g, "");
+  return h.split("(")[0].toLowerCase().replace(/%/g, "pct").replace(/[^a-z0-9]/g, "");
+}
+
+// Recover aliases from a header's parenthetical hint. Jennifer's Memo In / Bill In
+// template mislabels the Lot Type column as a *second* "Stone Type (Parcel, Pair,
+// Single)" — its base label ("stonetype") collides with the real Stone Type column
+// and would be dropped, silently defaulting every row to SINGLE. Any header whose
+// text names the lot-type values is therefore also indexed under "lottype".
+function hintAliases(header: string): string[] {
+  return /\b(parcel|pair|single)\b/i.test(header) ? ["lottype"] : [];
 }
 
 // Strip $, thousands separators and spaces; parse to a finite number or null.
@@ -111,7 +122,9 @@ function buildRawItem(category: ImsCsvCategory, get: RowGet): Record<string, unk
       fluorescence: str(get(["fluo", "fluorescence", "fluor"])),
       lengthMm: num(get(["length"])),
       widthMm: num(get(["width"])),
-      heightMm: num(get(["depth", "height"])), // "Depth" among the mm dims = physical height
+      heightMm: num(get(["depth", "height"])), // "Depth" (mm) among the mm dims = physical height
+      depthPct: num(get(["depthpct", "depthpercent"])), // distinct "Depth %" column
+      tablePct: num(get(["tablepct", "tablepercent", "table"])),
       ratio: num(get(["ratio"])),
       lab: str(get(["lab"])),
       certNumber: str(get(["certno", "certnumber", "cert"])),
@@ -148,10 +161,12 @@ function buildRawItem(category: ImsCsvCategory, get: RowGet): Record<string, unk
         lengthMm: num(get(["length"])),
         ringSize: str(get(["size", "ringsize"])),
         mm: num(get(["mm"])),
+        metalWeightGrams: num(get(["metalweight", "metalweightgrams", "weightgrams", "grams"])),
         productionCost: num(get(["cost", "productioncost"])),
         wholesalePrice: num(get(["wholesaleprice", "wholesale"])),
         retailPrice: num(get(["retailprice", "retail"])),
-        brand: str(get(["brand"]))
+        brand: str(get(["brand"])),
+        photo1Url: str(get(["image1", "image", "photo1", "photo"])) // one photo, no video (Jennifer 07-23)
       }
     };
   }
@@ -169,7 +184,8 @@ function buildRawItem(category: ImsCsvCategory, get: RowGet): Record<string, unk
       size: str(get(["size"])),
       mm: num(get(["mm"])),
       cost: num(get(["cost"])),
-      wholesalePrice: num(get(["wholesaleprice", "wholesale"]))
+      wholesalePrice: num(get(["wholesaleprice", "wholesale"])),
+      photo1Url: str(get(["image1", "image", "photo1", "photo"])) // one photo, no video (Jennifer 07-23)
     }
   };
 }
@@ -226,6 +242,11 @@ export function parseInventoryCsv(category: ImsCsvCategory, csvText: string): Im
   records[0].forEach((h, i) => {
     const key = normalizeHeader(h);
     if (key && !headerIndex.has(key)) headerIndex.set(key, i);
+    // First non-colliding column wins each alias, so the real Stone Type column
+    // keeps "stonetype" and a mislabeled Lot Type column still claims "lottype".
+    for (const alias of hintAliases(h)) {
+      if (!headerIndex.has(alias)) headerIndex.set(alias, i);
+    }
   });
 
   const dataRows = records.slice(1);
