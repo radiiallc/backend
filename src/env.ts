@@ -136,5 +136,20 @@ export const env = {
 
   sherryFeedToken: optional("SHERRY_FEED_TOKEN", ""),
   sherryFeedNaturalMarkupPct: numberOptional("SHERRY_FEED_NATURAL_MARKUP_PCT", 5),
-  sherryFeedLabMarkupPct: numberOptional("SHERRY_FEED_LAB_MARKUP_PCT", 15)
+  sherryFeedLabMarkupPct: numberOptional("SHERRY_FEED_LAB_MARKUP_PCT", 15),
+
+  // --- GIA Report Results API (grade-report lookup, IMS ⑤) -----------------
+  // The admin looks up a GIA report number to pre-fill a diamond's grading
+  // fields. GIA's GraphQL API (POST, `Authorization: <key>`) serves BOTH sandbox
+  // and production from one endpoint — the KEY scopes which reports are visible
+  // (a sandbox key can only read GIA's published sandbox reports). So the cutover
+  // to live data is a KEY swap, not an endpoint change. The key is server-only —
+  // never exposed to a browser; the admin calls our /ims/gia/lookup proxy. Empty
+  // key => the proxy returns a clean "not configured" error rather than calling
+  // out. Endpoint defaults to the host Jennifer was given; confirm the exact URL
+  // from GIA's signup email if a call 404s. Timeout keeps a slow GIA call from
+  // hanging the admin request.
+  giaApiEndpoint: optional("GIA_API_ENDPOINT", "https://api.reportresults.gia.edu/"),
+  giaApiKey: optional("GIA_API_KEY", ""),
+  giaApiTimeoutMs: numberOptional("GIA_API_TIMEOUT_MS", 15_000)
 } as const;

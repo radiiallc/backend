@@ -12,6 +12,7 @@ import {
   ImsCreateVocabularySchema,
   ImsDocumentIdsSchema,
   ImsDocumentQuerySchema,
+  ImsGiaLookupSchema,
   ImsInventoryQuerySchema,
   ImsParseInboundCsvSchema,
   ImsRecordReturnSchema,
@@ -52,6 +53,7 @@ import {
   listVocabularyFromDb
 } from "../modules/ims/reads";
 import { parseInventoryCsv } from "../modules/ims/csv-import";
+import { lookupGiaReport } from "../modules/ims/gia.service";
 import { createVendor, updateVendor } from "../modules/ims/vendors.service";
 import { addVocabularyValue } from "../modules/ims/vocabulary.service";
 
@@ -167,6 +169,23 @@ imsRouter.post(
       return;
     }
     res.json(result.item);
+  })
+);
+
+// ── GIA report lookup ─────────────────────────────────────────────────────────
+// Proxy a GIA report number to GIA's Report Results API (key server-side) and
+// return a mergeable pre-fill for the stone item form. Always 200 with a result
+// body — a missing report / unsupported kind / GIA outage all surface as
+// found:false + a friendly `error`, so the admin renders one consistent shape.
+imsRouter.post(
+  "/gia/lookup",
+  wrap(async (req, res) => {
+    const parsed = ImsGiaLookupSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid lookup payload" });
+      return;
+    }
+    res.json(await lookupGiaReport(parsed.data.reportNumber));
   })
 );
 

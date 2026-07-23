@@ -606,6 +606,71 @@ export interface ImsParseInboundCsvResult {
   items: ImsInboundItemInput[];
 }
 
+// ── GIA report lookup (grade-report pre-fill, IMS ⑤) ─────────────────────────
+// The admin enters a GIA report number; the backend proxies GIA's Report Results
+// API (key server-side) and returns a normalized pre-fill for the diamond form.
+// GIA numbers are digits, but jewelry/report cards can be alphanumeric — keep it
+// a trimmed free string.
+export const ImsGiaLookupSchema = z.object({
+  reportNumber: z.string().trim().min(1)
+});
+export type ImsGiaLookup = z.infer<typeof ImsGiaLookupSchema>;
+
+// Grading fields GIA can supply, shaped to drop straight onto the stone item form
+// (a subset of ImsStoneDetailInput). All nullable — GIA omits fields that don't
+// apply to a given report (e.g. cut grade on a dossier without one). The admin
+// merges these into the current form; nothing is written until they save.
+export interface ImsGiaPrefill {
+  naturalOrLab: StoneType | null;
+  gemType: string | null; // "Diamond" for diamond reports; the variety/species for a colored stone
+  shape: string | null;
+  weightCt: number | null;
+  color: string | null;
+  fancyColor: string | null;
+  clarity: string | null;
+  cutGrade: string | null;
+  polish: string | null;
+  symmetry: string | null;
+  fluorescence: string | null;
+  lengthMm: number | null;
+  widthMm: number | null;
+  heightMm: number | null;
+  depthPct: number | null;
+  tablePct: number | null;
+  girdle: string | null;
+  lab: string | null; // always "GIA" on a found report
+  certNumber: string | null; // the report number itself
+  origin: string | null;
+  treatment: string | null;
+}
+
+// Time-limited (~60 min) GIA-hosted asset URLs for the looked-up report — for
+// immediate view in the admin only. NOT persisted onto the item (they expire);
+// permanent media is uploaded separately.
+export interface ImsGiaLinks {
+  pdf: string | null;
+  image: string | null;
+  proportionsDiagram: string | null;
+  plottingDiagram: string | null;
+}
+
+// The lookup outcome. `found=false` when GIA has no such report (or the key can't
+// see it); `supported=false` when the report is a kind we don't map onto a stone
+// (pearl / jewelry card) — both carry a friendly `error`. On success `prefill` is
+// the mergeable field set and `links` the transient assets.
+export interface ImsGiaLookupResult {
+  found: boolean;
+  supported: boolean;
+  reportNumber: string | null;
+  reportDate: string | null;
+  reportType: string | null;
+  resultType: string | null; // GIA __typename (e.g. DiamondGradingReportResults)
+  prefill: ImsGiaPrefill | null;
+  links: ImsGiaLinks | null;
+  quotaRemaining: number | null;
+  error: string | null;
+}
+
 // Batch document-id payload — shared by the "email these docs" and "sync these
 // docs to QuickBooks" actions (admin sendEmail / _runSync both act on the set of
 // selected docs). Both endpoints stamp a timestamp (emailedAt /
