@@ -227,6 +227,12 @@ model Request {
   reviewedAt   DateTime?
   items        RequestItem[]
 
+  // H9 convertReq (#0035): the Memo Out / Invoice this request was turned into
+  // (Option A — approved lines are received + placed on the doc in one step). Null
+  // until converted; unique because a request mints at most one document.
+  convertedDocumentId String?   @unique
+  convertedDocument   Document? @relation("RequestConversion", fields: [convertedDocumentId], references: [id])
+
   @@index([userId])
   @@index([companyId])
   @@index([status])
@@ -242,7 +248,15 @@ model RequestItem {
   snapshotPayload  Json
   status           RequestItemStatus @default(PENDING)
 
+  // H9 substitute (#0038): a dealer-added line offering an item RADIIA actually
+  // holds instead of a denied request. Points at that owned InventoryItem (so
+  // convert draws it down directly rather than JIT-receiving from a snapshot).
+  // Null for a normal client-requested (feed) line.
+  substituteInventoryItemId String?
+  substituteInventoryItem   InventoryItem? @relation("SubstituteRequestItems", fields: [substituteInventoryItemId], references: [id])
+
   @@index([requestId])
+  @@index([substituteInventoryItemId])
 }
 
 model Diamond {
@@ -464,6 +478,7 @@ model InventoryItem {
   material      OtherMaterialDetail?
   lineItems     DocumentLineItem[]
   statusHistory ItemStatusHistory[]
+  substituteRequestItems RequestItem[] @relation("SubstituteRequestItems")
 
   @@index([status])
   @@index([itemType])
@@ -587,6 +602,7 @@ model Document {
   lineItems          DocumentLineItem[]  @relation("DocumentLines")
   resolvedLineItems  DocumentLineItem[]  @relation("LineResolutions")
   statusHistory      ItemStatusHistory[]
+  sourceRequest      Request?            @relation("RequestConversion")
 
   @@index([type])
   @@index([status])

@@ -33,7 +33,7 @@ export async function getCompanyByIdFromDb(id: string): Promise<AdminCompany | n
 
 export async function listRequestsFromDb(): Promise<AdminRequest[]> {
   const requests = await prisma.request.findMany({
-    include: { items: true },
+    include: { items: true, convertedDocument: { select: { documentNumber: true } } },
     orderBy: { submittedAt: "desc" }
   });
   return requests.map(prismaRequestToAdminRequest);
@@ -45,7 +45,7 @@ export async function listRecentRequestsByCompanyFromDb(
 ): Promise<AdminRequest[]> {
   const requests = await prisma.request.findMany({
     where: { companyId },
-    include: { items: true },
+    include: { items: true, convertedDocument: { select: { documentNumber: true } } },
     orderBy: { submittedAt: "desc" },
     take: limit
   });
@@ -55,7 +55,7 @@ export async function listRecentRequestsByCompanyFromDb(
 export async function getRequestByIdFromDb(id: string): Promise<AdminRequest | null> {
   const request = await prisma.request.findUnique({
     where: { id },
-    include: { items: true }
+    include: { items: true, convertedDocument: { select: { documentNumber: true } } }
   });
   return request ? prismaRequestToAdminRequest(request) : null;
 }

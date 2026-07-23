@@ -48,7 +48,10 @@ export function prismaUserToAdminAccount(u: PrismaUser): AdminAccount {
 }
 
 export function prismaRequestToAdminRequest(
-  r: PrismaRequest & { items: PrismaRequestItem[] }
+  r: PrismaRequest & {
+    items: PrismaRequestItem[];
+    convertedDocument?: { documentNumber: string | null } | null;
+  }
 ): AdminRequest {
   return {
     id: r.id,
@@ -58,8 +61,11 @@ export function prismaRequestToAdminRequest(
     companyId: r.companyId,
     submittedByAccountId: r.userId,
     submittedAt: r.submittedAt.toISOString(),
+    reviewedAt: r.reviewedAt?.toISOString() ?? null,
     noteFromClient: r.note,
     externalNote: r.externalNote ?? "",
+    convertedDocumentId: r.convertedDocumentId ?? null,
+    convertedDocumentNumber: r.convertedDocument?.documentNumber ?? null,
     items: r.items.map(prismaRequestItemToAdminRequestItem)
   };
 }
@@ -90,7 +96,9 @@ export function prismaRequestItemToAdminRequestItem(item: PrismaRequestItem): Ad
     vendor: stringFromPayload(payload, "vendor") ?? resolveVendorFallback(payload),
     pricePerCarat: pricePerCarat ?? 0,
     totalPrice,
-    status: itemStatusToAdmin(item.status)
+    status: itemStatusToAdmin(item.status),
+    isSubstitute: item.substituteInventoryItemId !== null,
+    substituteInventoryItemId: item.substituteInventoryItemId ?? null
   };
 }
 
