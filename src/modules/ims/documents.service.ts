@@ -439,6 +439,13 @@ export async function voidDocument(
         where: { id: item.id },
         data: { status: priorStatus }
       });
+      // The line has to stop claiming it sold the stone. Left as SOLD, this
+      // voided line still answers "which document sold RAD-01007?" — and would
+      // beat the real invoice when the stone is re-sold the same day.
+      await tx.documentLineItem.update({
+        where: { id: line.id },
+        data: { lineStatus: priorStatus === "ON_MEMO" ? "ON_MEMO" : "IN_STOCK" }
+      });
       await tx.itemStatusHistory.create({
         data: {
           inventoryItemId: item.id,
