@@ -499,6 +499,13 @@ model StoneDetail {
   shape               String
   weightCt            Decimal       @db.Decimal(10, 3) // = Carat
   quantity            Int? // parcel running qty
+  // PARCEL draw-down (Jennifer 2026-07-28 melee pilot): weightCt/quantity stay
+  // the ORIGINAL lot size; these two count down as carats are invoiced out. Null
+  // on SINGLE/PAIR — those stay atomic (whole-item status flip, as before). A
+  // parcel is SOLD only once remainingCt reaches 0. Null on a parcel means
+  // "created before this column existed"; the service falls back to weightCt.
+  remainingCt         Decimal?      @db.Decimal(10, 3)
+  remainingQty        Int?
   color               String? // white grade OR gem color name
   fancyColor          String? // diamond fancy hue (split from Color on import)
   fancyIntensity      String?
@@ -647,6 +654,10 @@ model ItemStatusHistory {
   changedById     String
   changedBy       User          @relation(fields: [changedById], references: [id])
   changedAt       DateTime      @default(now())
+  // Why, when the row is not self-explanatory from the document: a parcel
+  // write-off ("0.02 ct dust, unsellable"), a recount, a void. Required by the
+  // adjust path — stock moving with no money attached is what gets audited.
+  note            String?
 
   @@index([inventoryItemId])
   @@index([documentId])

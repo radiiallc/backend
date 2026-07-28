@@ -52,6 +52,10 @@ export const ImsStoneDetailSchema = z.object({
   shape: z.string(),
   weightCt: z.number().nullable(),
   quantity: z.number().nullable(),
+  // Parcel running balance — what is still in stock, vs weightCt/quantity which
+  // stay the original lot size. Null on singles/pairs (they are atomic).
+  remainingCt: z.number().nullable(),
+  remainingQty: z.number().nullable(),
   color: z.string().nullable(),
   fancyColor: z.string().nullable(),
   fancyIntensity: z.string().nullable(),
@@ -487,13 +491,44 @@ export type ImsDocumentQuery = z.infer<typeof ImsDocumentQuerySchema>;
 // write slice covers the two types that transition item status: MEMO_OUT
 // (items -> ON_MEMO) and INVOICE (items -> SOLD). PO / inbound / returns land in
 // later slices.
-export const ImsCreateDocumentSchema = z.object({
-  type: z.enum(["MEMO_OUT", "INVOICE"]),
-  clientId: z.string().min(1),
-  inventoryItemIds: z.array(z.string().min(1)).min(1),
-  discountAmount: z.number().nonnegative().optional(),
-  notes: z.string().optional()
+// Adjust a parcel's remaining balance with no document behind it — a physical
+// recount, or writing off the last unsellable crumb of melee. The reason is
+// required: stock moving without money attached is the event an audit asks about.
+export const ImsAdjustParcelRemainingSchema = z.object({
+  remainingCt: z.number().nonnegative(),
+  remainingQty: z.number().int().nonnegative().nullable().optional(),
+  reason: z.string().trim().min(1)
 });
+export type ImsAdjustParcelRemaining = z.infer<typeof ImsAdjustParcelRemainingSchema>;
+
+// One line on an outbound doc, with an optional partial draw. Omit caratWeight
+// and the whole item goes on the doc (a single stone, a pair — the only sensible
+// reading, and what every existing caller does). Supply it for a PARCEL to draw
+// a slice: 0.40 ct off a 16.76 ct lot of melee. quantity is the parallel piece
+// count, present only on parcels that track pieces (some are carat-only).
+export const ImsDocumentLineDrawSchema = z.object({
+  inventoryItemId: z.string().min(1),
+  caratWeight: z.number().positive().optional(),
+  quantity: z.number().int().positive().optional()
+});
+export type ImsDocumentLineDraw = z.infer<typeof ImsDocumentLineDrawSchema>;
+
+export const ImsCreateDocumentSchema = z
+  .object({
+    type: z.enum(["MEMO_OUT", "INVOICE"]),
+    clientId: z.string().min(1),
+    // Legacy whole-item form. Still accepted and still means "the entire item",
+    // so every existing admin call keeps working untouched.
+    inventoryItemIds: z.array(z.string().min(1)).min(1).optional(),
+    // Draw form. Supersedes inventoryItemIds when both are sent.
+    lines: z.array(ImsDocumentLineDrawSchema).min(1).optional(),
+    discountAmount: z.number().nonnegative().optional(),
+    notes: z.string().optional()
+  })
+  .refine((d) => (d.lines?.length ?? 0) > 0 || (d.inventoryItemIds?.length ?? 0) > 0, {
+    message: "Provide lines or inventoryItemIds",
+    path: ["lines"]
+  });
 export type ImsCreateDocument = z.infer<typeof ImsCreateDocumentSchema>;
 
 // Record a return against an open Memo Out (admin #0025 / recordMemoReturn).

@@ -53,6 +53,8 @@ function prismaStoneToDetail(s: PrismaStoneDetail): ImsStoneDetail {
     shape: s.shape,
     weightCt: decOrNull(s.weightCt),
     quantity: s.quantity,
+    remainingCt: decOrNull(s.remainingCt),
+    remainingQty: s.remainingQty,
     color: s.color,
     fancyColor: s.fancyColor,
     fancyIntensity: s.fancyIntensity,

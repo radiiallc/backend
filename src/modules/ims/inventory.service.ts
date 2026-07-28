@@ -1,5 +1,6 @@
 import { Prisma, prisma } from "@/db";
 import type {
+  ImsAdjustParcelRemaining,
   ImsCreateInventoryItem,
   ImsInboundItemInput,
   ImsInventoryItem,
@@ -7,6 +8,7 @@ import type {
 } from "@/contract";
 
 import { IMS_ITEM_INCLUDE, prismaItemToDto } from "./mappers";
+import { parcelOpeningBalance, rebaseUntouchedParcel, resolveAdjust } from "./parcel";
 
 export type CreateItemResult =
   | { ok: true; item: ImsInventoryItem }
@@ -104,12 +106,75 @@ export function buildInboundItemCreateData(
   if (input.itemType === "STONE") {
     const s = input.stone;
     const totals = stoneTotals(s.weightCt, s.wholesalePricePerCt ?? null, s.costPerCt ?? null);
-    return { ...core, itemSubtype: input.itemSubtype ?? null, stone: { create: { ...s, ...totals } } };
+    const opening = parcelOpeningBalance(input.itemSubtype, s);
+    return {
+      ...core,
+      itemSubtype: input.itemSubtype ?? null,
+      stone: { create: { ...s, ...totals, ...opening } }
+    };
   }
   if (input.itemType === "JEWELRY") {
     return { ...core, jewelry: { create: { ...input.jewelry } } };
   }
   return { ...core, material: { create: { ...input.material } } };
+}
+
+// Adjust a parcel's remaining balance outside any document — a physical recount
+// or a write-off of the unsellable remainder. See resolveAdjust for why this
+// exists: melee sold in 0.40 ct slices strands a crumb that no invoice will ever
+// clear, and the parcel would otherwise sit open forever.
+//
+// Emptying a parcel this way marks it SOLD, which is the closest honest status:
+// the stock is gone and it left through RADIIA. The audit note carries the real
+// reason, and is mandatory.
+export async function adjustParcelRemaining(
+  id: string,
+  input: ImsAdjustParcelRemaining,
+  actorId: string
+): Promise<UpdateItemResult> {
+  const item = await prisma.inventoryItem.findUnique({
+    where: { id },
+    include: { stone: true }
+  });
+  if (!item) return { ok: false, error: "Inventory item not found" };
+
+  const resolved = resolveAdjust(item, input);
+  if (!resolved.ok) return { ok: false, error: resolved.error };
+
+  const previousStatus = item.status;
+  const nextStatus = resolved.emptied ? "SOLD" : previousStatus;
+
+  await prisma.$transaction(async (tx) => {
+    await tx.stoneDetail.update({
+      where: { inventoryItemId: id },
+      data: { remainingCt: resolved.remainingCt, remainingQty: resolved.remainingQty }
+    });
+    if (nextStatus !== previousStatus) {
+      await tx.inventoryItem.update({
+        where: { id },
+        data: { status: nextStatus, visibleOnPortal: false }
+      });
+    }
+    // Always audit, even when the status did not move — the balance change is
+    // the event worth recording, not the status.
+    await tx.itemStatusHistory.create({
+      data: {
+        inventoryItemId: id,
+        previousStatus,
+        newStatus: nextStatus,
+        changedById: actorId,
+        note: `Parcel balance adjusted to ${resolved.remainingCt} ct${
+          resolved.remainingQty === null ? "" : ` / ${resolved.remainingQty} pc`
+        } — ${input.reason}`
+      }
+    });
+  });
+
+  const updated = await prisma.inventoryItem.findUniqueOrThrow({
+    where: { id },
+    include: IMS_ITEM_INCLUDE
+  });
+  return { ok: true, item: prismaItemToDto(updated) };
 }
 
 async function assertPartiesExist(
@@ -156,7 +221,7 @@ export async function createInventoryItem(
       ...core,
       sku: "", // replaced per attempt below
       itemSubtype: input.itemSubtype ?? null,
-      stone: { create: { ...s, ...totals } }
+      stone: { create: { ...s, ...totals, ...parcelOpeningBalance(input.itemSubtype, s) } }
     };
   } else if (input.itemType === "JEWELRY") {
     detail = { ...core, sku: "", jewelry: { create: { ...input.jewelry } } };
@@ -226,7 +291,15 @@ export async function updateInventoryItem(
     const costPerCt =
       input.stone.costPerCt !== undefined ? input.stone.costPerCt : decToNum(ex.costPerCt);
     const totals = stoneTotals(weightCt, wholesalePricePerCt, costPerCt);
-    data.stone = { update: { ...input.stone, ...totals } };
+    // Carry the parcel balance along with a weight/qty correction, but only
+    // while nothing has been drawn yet (see rebaseUntouchedParcel).
+    const rebased = rebaseUntouchedParcel(
+      input.itemSubtype !== undefined ? input.itemSubtype : item.itemSubtype,
+      ex,
+      weightCt,
+      input.stone.quantity
+    );
+    data.stone = { update: { ...input.stone, ...totals, ...rebased } };
   }
   if (input.jewelry) data.jewelry = { update: { ...input.jewelry } };
   if (input.material) data.material = { update: { ...input.material } };

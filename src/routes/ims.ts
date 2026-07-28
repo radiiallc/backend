@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from "express";
 
 import {
+  ImsAdjustParcelRemainingSchema,
   ImsClientLifecycleSchema,
   ImsClientQuerySchema,
   ImsCreateClientSchema,
@@ -35,9 +36,11 @@ import {
   createPurchaseOrder,
   emailDocuments,
   quickbooksSyncDocuments,
-  recordMemoReturn
+  recordMemoReturn,
+  voidDocument
 } from "../modules/ims/documents.service";
 import {
+  adjustParcelRemaining,
   createInventoryItem,
   releaseItem,
   reserveItem,
@@ -164,6 +167,27 @@ imsRouter.post(
   "/inventory/:id/release",
   wrap(async (req, res) => {
     const result = await releaseItem(req.params.id, req.user!.id);
+    if (!result.ok) {
+      const code = result.error === "Inventory item not found" ? 404 : 400;
+      res.status(code).json({ error: result.error });
+      return;
+    }
+    res.json(result.item);
+  })
+);
+
+// Adjust a parcel's remaining carat/piece balance with no document behind it —
+// a recount, or writing off the unsellable last crumb of a melee lot. Requires a
+// reason; audited to ItemStatusHistory.
+imsRouter.patch(
+  "/inventory/:id/remaining",
+  wrap(async (req, res) => {
+    const parsed = ImsAdjustParcelRemainingSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid adjustment payload" });
+      return;
+    }
+    const result = await adjustParcelRemaining(req.params.id, parsed.data, req.user!.id);
     if (!result.ok) {
       const code = result.error === "Inventory item not found" ? 404 : 400;
       res.status(code).json({ error: result.error });
@@ -491,6 +515,20 @@ imsRouter.post(
       return;
     }
     res.json({ documents: result.documents });
+  })
+);
+
+// Void an Invoice — undo it. Restores parcel carats/pieces and whole-item
+// statuses, keeps the document (marked VOID) so numbering stays gap-free.
+imsRouter.post(
+  "/documents/:id/void",
+  wrap(async (req, res) => {
+    const result = await voidDocument(req.params.id, req.user!.id);
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.json({ document: result.document });
   })
 );
 

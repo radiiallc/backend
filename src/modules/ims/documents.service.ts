@@ -5,6 +5,7 @@ import type {
   ImsCreateInboundDocument,
   ImsCreatePurchaseOrder,
   ImsDocument,
+  ImsDocumentLineDraw,
   ImsRecordReturn
 } from "@/contract";
 
@@ -17,6 +18,7 @@ import {
 } from "./documents.constants";
 import { IMS_DOC_INCLUDE, prismaDocToDto } from "./documents.mappers";
 import { buildInboundItemCreateData, mintSkuBatch } from "./inventory.service";
+import { type ResolvedDraw, resolveDraw, reverseDraw } from "./parcel";
 
 function isUniqueViolation(e: unknown): boolean {
   return e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002";
@@ -34,15 +36,18 @@ export type StampDocumentsResult =
   | { ok: true; documents: ImsDocument[] }
   | { ok: false; error: string };
 
+export type VoidDocumentResult = { ok: true; document: ImsDocument } | { ok: false; error: string };
+
 type ItemWithDetails = Prisma.InventoryItemGetPayload<{
   include: { stone: true; jewelry: true; material: true };
 }>;
 
 // One priced line ready to persist, plus the source status we need for the
-// ItemStatusHistory audit row.
+// ItemStatusHistory audit row and the resolved parcel movement.
 type LineSnapshot = {
   itemId: string;
   currentStatus: ItemWithDetails["status"];
+  draw: ResolvedDraw;
   quantity: number | null;
   caratWeight: number | null;
   unitPrice: number | null;
@@ -57,20 +62,34 @@ function num(value: Prisma.Decimal | null): number | null {
 
 // Freeze the item's wholesale value onto the line at doc-creation time. Mirrors
 // admin twOf(): stones = carat × price-per-carat; jewelry/other = wholesalePrice.
-function priceSnapshot(item: ItemWithDetails): {
+//
+// `draw` carries the resolved parcel movement (see ./parcel). When it names a
+// carat weight, the line prices THAT slice at the parcel's per-carat rate rather
+// than the whole lot — 0.40 ct off a 16.76 ct parcel bills 0.40 × price/ct. The
+// per-carat rate is fixed per parcel for the pilot, so the parcel's own
+// wholesalePricePerCt is the only input.
+function priceSnapshot(
+  item: ItemWithDetails,
+  draw?: { drawCt: number | null; drawQty: number | null }
+): {
   quantity: number | null;
   caratWeight: number | null;
   unitPrice: number | null;
   totalPrice: number | null;
 } {
   if (item.stone) {
-    const carat = num(item.stone.weightCt);
+    const carat = draw?.drawCt ?? num(item.stone.weightCt);
+    const qty = draw?.drawCt != null ? draw.drawQty : item.stone.quantity;
     const ppc = num(item.stone.wholesalePricePerCt);
     const total =
       carat !== null && ppc !== null
         ? Math.round(carat * ppc * 100) / 100
-        : num(item.stone.totalWholesalePrice);
-    return { quantity: item.stone.quantity, caratWeight: carat, unitPrice: ppc, totalPrice: total };
+        : // Only fall back to the frozen lot total when this is a whole-item
+          // line; on a partial draw it would bill the entire parcel.
+          draw?.drawCt != null
+          ? null
+          : num(item.stone.totalWholesalePrice);
+    return { quantity: qty, caratWeight: carat, unitPrice: ppc, totalPrice: total };
   }
   if (item.jewelry) {
     const price = num(item.jewelry.wholesalePrice);
@@ -149,8 +168,38 @@ export async function createOutboundDocument(
   const client = await prisma.company.findUnique({ where: { id: input.clientId } });
   if (!client) return { ok: false, error: "Client not found" };
 
-  // Dedup ids; a stone listed twice would be double-drawn.
-  const ids = Array.from(new Set(input.inventoryItemIds));
+  // Accept either form: the legacy whole-item id list, or per-line draws that
+  // can carry a partial carat weight for a parcel. `lines` wins when both are
+  // sent. Normalising here keeps one code path below.
+  const requested: ImsDocumentLineDraw[] = input.lines?.length
+    ? input.lines
+    : (input.inventoryItemIds ?? []).map((id) => ({ inventoryItemId: id }));
+
+  if (requested.length === 0) {
+    return { ok: false, error: "A document needs at least one line" };
+  }
+
+  // A stone listed twice would be double-drawn. The legacy form dedups (the
+  // admin has always sent unique ids); the draw form rejects, because two draws
+  // of one parcel on one document is ambiguous — the caller should send a single
+  // combined carat weight rather than have us silently pick or sum.
+  const seen = new Set<string>();
+  const lines: ImsDocumentLineDraw[] = [];
+  for (const line of requested) {
+    if (seen.has(line.inventoryItemId)) {
+      if (input.lines?.length) {
+        return {
+          ok: false,
+          error: `Item ${line.inventoryItemId} appears twice — combine it into one line`
+        };
+      }
+      continue;
+    }
+    seen.add(line.inventoryItemId);
+    lines.push(line);
+  }
+
+  const ids = lines.map((l) => l.inventoryItemId);
   const items = await prisma.inventoryItem.findMany({
     where: { id: { in: ids } },
     include: { stone: true, jewelry: true, material: true }
@@ -172,11 +221,22 @@ export async function createOutboundDocument(
     };
   }
 
-  const snapshots: LineSnapshot[] = items.map((item) => ({
-    itemId: item.id,
-    currentStatus: item.status,
-    ...priceSnapshot(item)
-  }));
+  // Resolve every parcel draw against live stock BEFORE opening the transaction,
+  // so an over-draw on line 7 rejects the whole document instead of half-writing
+  // it.
+  const byId = new Map(items.map((i) => [i.id, i]));
+  const snapshots: LineSnapshot[] = [];
+  for (const line of lines) {
+    const item = byId.get(line.inventoryItemId)!;
+    const resolved = resolveDraw(item, line, type);
+    if (!resolved.ok) return { ok: false, error: resolved.error };
+    snapshots.push({
+      itemId: item.id,
+      currentStatus: item.status,
+      draw: resolved.draw,
+      ...priceSnapshot(item, resolved.draw)
+    });
+  }
 
   const now = new Date();
   const dueDate =
@@ -223,7 +283,24 @@ export async function createOutboundDocument(
 
     // Transition each item and audit it. Status only ever moves through a doc,
     // so every transition gets an ItemStatusHistory row pointing at this doc.
+    //
+    // A PARCEL drawn partially is the one case where the item does NOT change
+    // status: carats come off the balance and the lot stays IN_STOCK, sellable
+    // again tomorrow. It flips only when the last carat leaves.
     for (const s of snapshots) {
+      const { draw } = s;
+
+      if (draw.remainingAfterCt !== null) {
+        await tx.stoneDetail.update({
+          where: { inventoryItemId: s.itemId },
+          data: { remainingCt: draw.remainingAfterCt, remainingQty: draw.remainingAfterQty }
+        });
+      }
+
+      // Partial draw that left stock behind: no status change, so no history row
+      // (the document line itself is the record of the movement).
+      if (draw.isPartial && !draw.emptied) continue;
+
       await tx.inventoryItem.update({
         where: { id: s.itemId },
         data: { status: newItemStatus, visibleOnPortal: false }
@@ -276,6 +353,114 @@ export async function createOutboundDocument(
     include: IMS_DOC_INCLUDE
   });
   return { ok: true, document: prismaDocToDto(created) };
+}
+
+// Void an Invoice — the REVERSE half of the draw/reverse pair, and the undo path
+// the system has never had.
+//
+// This matters far more once parcels count down. A whole-item mistake is visible
+// and correctable by hand: the wrong stone shows as SOLD. A parcel mistake is
+// silent arithmetic — 4.0 ct typed instead of 0.40 takes ten times the stock out
+// of a lot and nothing about the row looks wrong afterwards. Without a reverse,
+// that carat weight is gone.
+//
+// Voiding restores every line: parcels get their carats and pieces back, whole
+// items get the status they held before this document (read from the audit trail
+// this document itself wrote, so the restore is exact rather than an assumption
+// that everything came from IN_STOCK). The document is kept, marked VOID, so the
+// numbering stays gap-free and the mistake stays visible.
+export async function voidDocument(
+  documentId: string,
+  actorId: string
+): Promise<VoidDocumentResult> {
+  const doc = await prisma.document.findUnique({
+    where: { id: documentId },
+    include: {
+      lineItems: { include: { inventoryItem: { include: { stone: true } } } }
+    }
+  });
+  if (!doc) return { ok: false, error: "Document not found" };
+
+  if (doc.type !== "INVOICE") {
+    return { ok: false, error: `Only an Invoice can be voided (this is a ${doc.type})` };
+  }
+  if (doc.status === "VOID") return { ok: false, error: "Document is already void" };
+  if (doc.quickbooksSyncedAt) {
+    // Once it has gone to QuickBooks, voiding here would silently desync the two
+    // ledgers. Not a concern during the pilot (invoices are internal-only until
+    // QB is connected) but it must not become one later.
+    return {
+      ok: false,
+      error: "This invoice has been synced to QuickBooks — void it there first"
+    };
+  }
+
+  // A stone this invoice sold OUT of an open memo had its memo line resolved to
+  // SOLD. Reversing that cleanly means reopening the memo, which is a second
+  // lifecycle; refuse rather than leave a memo in a wrong state.
+  const resolvedMemoLines = await prisma.documentLineItem.count({
+    where: { resolvedByDocumentId: doc.id }
+  });
+  if (resolvedMemoLines > 0) {
+    return {
+      ok: false,
+      error: "This invoice sold stones off an open Memo Out — voiding it is not supported yet"
+    };
+  }
+
+  await prisma.$transaction(async (tx) => {
+    for (const line of doc.lineItems) {
+      const item = line.inventoryItem;
+      const stone = item.stone;
+      const isParcelLine = item.itemSubtype === "PARCEL" && stone !== null;
+
+      if (isParcelLine) {
+        // Give the drawn carats/pieces back to the balance.
+        const restored = reverseDraw(stone, num(line.caratWeight), line.quantity);
+        await tx.stoneDetail.update({
+          where: { inventoryItemId: item.id },
+          data: { remainingCt: restored.remainingCt, remainingQty: restored.remainingQty }
+        });
+      }
+
+      // Restore the status this document changed — but only if it changed one.
+      // A partial parcel draw never moved the item, so there is nothing to undo.
+      const history = await tx.itemStatusHistory.findFirst({
+        where: { inventoryItemId: item.id, documentId: doc.id },
+        orderBy: { changedAt: "desc" }
+      });
+      // previousStatus is nullable (an item's origin row has none). Without a
+      // recorded prior status there is nothing to restore to, and guessing
+      // IN_STOCK could resurrect a stone that was never in stock.
+      const priorStatus = history?.previousStatus;
+      if (!priorStatus) continue;
+
+      await tx.inventoryItem.update({
+        where: { id: item.id },
+        data: { status: priorStatus }
+      });
+      await tx.itemStatusHistory.create({
+        data: {
+          inventoryItemId: item.id,
+          previousStatus: history.newStatus,
+          newStatus: priorStatus,
+          documentId: doc.id,
+          changedById: actorId
+        }
+      });
+    }
+
+    await tx.document.update({
+      where: { id: doc.id },
+      data: { status: "VOID", closeReason: null }
+    });
+  });
+
+  const updated = await prisma.document.findUniqueOrThrow({
+    where: { id: doc.id },
+    include: IMS_DOC_INCLUDE
+  });
+  return { ok: true, document: prismaDocToDto(updated) };
 }
 
 // Create a Purchase Order — a vendor-addressed outbound doc committing RADIIA to
