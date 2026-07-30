@@ -40,6 +40,44 @@ function hintAliases(header: string): string[] {
   return /\b(parcel|pair|single)\b/i.test(header) ? ["lottype"] : [];
 }
 
+const LOT_TYPE_VALUE = /^(parcels?|pairs?|singles?)$/i;
+
+// Last-ditch rescue for a Lot Type column that is BOTH duplicate-named and
+// hint-less — Jennifer's 7-30 sheet heads it plain "Stone type" (same text as the
+// real gem-variety column, no "(Parcel, Pair, Single)" to key off). Dropping it
+// would default every row to SINGLE, silently turning a parcel into one stone,
+// which is exactly the case the melee pilot's draw-down depends on. So: only for
+// columns whose header collided with an earlier one, and only when EVERY non-empty
+// value in the column is literally a lot-type word, claim "lottype". Header text
+// still wins — this never overrides a properly labeled column.
+function claimLotTypeByValue(
+  headerIndex: Map<string, number>,
+  collidedColumns: number[],
+  dataRows: string[][]
+): void {
+  if (headerIndex.has("lottype")) return;
+  for (const col of collidedColumns) {
+    const values = dataRows
+      .map((row) => (row[col] ?? "").trim())
+      .filter((v) => v !== "");
+    if (values.length > 0 && values.every((v) => LOT_TYPE_VALUE.test(v))) {
+      headerIndex.set("lottype", col);
+      return;
+    }
+  }
+}
+
+// "Show on website?" → visibleOnPortal. Anything affirmative is true, anything
+// negative is false, blank/unrecognized leaves the field unset (the item then
+// takes the server default: not visible — nothing leaks by accident).
+function bool(raw: string): boolean | undefined {
+  const s = (raw ?? "").trim().toLowerCase();
+  if (s === "") return undefined;
+  if (/^(y|yes|true|1|x|show|visible)$/.test(s)) return true;
+  if (/^(n|no|false|0|hide|hidden)$/.test(s)) return false;
+  return undefined;
+}
+
 // Strip $, thousands separators and spaces; parse to a finite number or null.
 function num(raw: string): number | null {
   if (raw == null) return null;
@@ -103,7 +141,8 @@ function buildRawItem(category: ImsCsvCategory, get: RowGet): Record<string, unk
   const core: Record<string, unknown> = {
     sku: str(get(["radiiasku", "sku", "stock"])),
     itemName: str(get(["itemname", "name"])),
-    vendorSku: str(get(["vendorsku"]))
+    vendorSku: str(get(["vendorsku"])),
+    visibleOnPortal: bool(get(["showonwebsite", "showonportal", "visibleonportal", "website", "portal"]))
   };
 
   if (category === "diamonds" || category === "gems") {
@@ -112,7 +151,9 @@ function buildRawItem(category: ImsCsvCategory, get: RowGet): Record<string, unk
       : { color: str(get(["color"])), fancyColor: undefined };
     const stone: Record<string, unknown> = {
       shape: str(get(["shape"])),
-      weightCt: num(get(["carat", "weight", "carats", "ct"])),
+      // "Carat" (7-13 template) and "Carat weight" (Jennifer's 7-30 sheet) are the
+      // same column; a miss here rejects the whole row, so spell out the variants.
+      weightCt: num(get(["carat", "caratweight", "caratwt", "weight", "weightct", "carats", "ct", "totalcarat", "totalcaratweight", "tcw"])),
       quantity: num(get(["quantity", "qty"])),
       color,
       fancyColor,
@@ -127,7 +168,7 @@ function buildRawItem(category: ImsCsvCategory, get: RowGet): Record<string, unk
       tablePct: num(get(["tablepct", "tablepercent", "table"])),
       ratio: num(get(["ratio"])),
       lab: str(get(["lab"])),
-      certNumber: str(get(["certno", "certnumber", "cert"])),
+      certNumber: str(get(["certno", "certnumber", "certificate", "certificateno", "certificatenumber", "cert"])),
       treatment: str(get(["treatment"])),
       origin: str(get(["origin"])),
       costPerCt: num(get(["costpercarat", "costperct", "cost"])),
@@ -239,9 +280,11 @@ export function parseInventoryCsv(category: ImsCsvCategory, csvText: string): Im
   }
 
   const headerIndex = new Map<string, number>();
+  const collidedColumns: number[] = [];
   records[0].forEach((h, i) => {
     const key = normalizeHeader(h);
     if (key && !headerIndex.has(key)) headerIndex.set(key, i);
+    else if (key) collidedColumns.push(i);
     // First non-colliding column wins each alias, so the real Stone Type column
     // keeps "stonetype" and a mislabeled Lot Type column still claims "lottype".
     for (const alias of hintAliases(h)) {
@@ -250,6 +293,7 @@ export function parseInventoryCsv(category: ImsCsvCategory, csvText: string): Im
   });
 
   const dataRows = records.slice(1);
+  claimLotTypeByValue(headerIndex, collidedColumns, dataRows);
   const rows: ImsCsvRowResult[] = [];
   const items: ImsInboundItemInput[] = [];
 
