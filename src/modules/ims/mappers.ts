@@ -79,8 +79,10 @@ function prismaStoneToDetail(s: PrismaStoneDetail): ImsStoneDetail {
     treatment: s.treatment,
     costPerCt: decOrNull(s.costPerCt),
     wholesalePricePerCt: decOrNull(s.wholesalePricePerCt),
+    retailPricePerCt: decOrNull(s.retailPricePerCt),
     totalCost: decOrNull(s.totalCost),
     totalWholesalePrice: decOrNull(s.totalWholesalePrice),
+    totalRetailPrice: decOrNull(s.totalRetailPrice),
     photo1Url: s.photo1Url,
     photo2Url: s.photo2Url,
     videoUrl: s.videoUrl

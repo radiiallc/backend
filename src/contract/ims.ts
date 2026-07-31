@@ -79,8 +79,10 @@ export const ImsStoneDetailSchema = z.object({
   treatment: z.string().nullable(),
   costPerCt: z.number().nullable(),
   wholesalePricePerCt: z.number().nullable(),
+  retailPricePerCt: z.number().nullable(),
   totalCost: z.number().nullable(),
   totalWholesalePrice: z.number().nullable(),
+  totalRetailPrice: z.number().nullable(),
   photo1Url: z.string().nullable(),
   photo2Url: z.string().nullable(),
   videoUrl: z.string().nullable()
@@ -290,6 +292,7 @@ export const ImsStoneDetailInputSchema = z.object({
   treatment: z.string().nullable().optional(),
   costPerCt: z.number().nullable().optional(),
   wholesalePricePerCt: z.number().nullable().optional(),
+  retailPricePerCt: z.number().nullable().optional(),
   photo1Url: z.string().nullable().optional(),
   photo2Url: z.string().nullable().optional(),
   videoUrl: z.string().nullable().optional()

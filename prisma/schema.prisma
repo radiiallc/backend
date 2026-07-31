@@ -529,8 +529,13 @@ model StoneDetail {
   treatment           String? // gems
   costPerCt           Decimal?      @db.Decimal(12, 2)
   wholesalePricePerCt Decimal?      @db.Decimal(12, 2)
+  // Third price tier (Jennifer 2026-07-30). Stones are quoted per carat, so
+  // retail is per carat too — unlike JewelryDetail.retailPrice, which prices a
+  // whole piece. Optional: the melee pilot fills it, older stones will not.
+  retailPricePerCt    Decimal?      @db.Decimal(12, 2)
   totalCost           Decimal?      @db.Decimal(12, 2) // app-computed
   totalWholesalePrice Decimal?      @db.Decimal(12, 2) // app-computed
+  totalRetailPrice    Decimal?      @db.Decimal(12, 2) // app-computed
   photo1Url           String?
   photo2Url           String?
   videoUrl            String?

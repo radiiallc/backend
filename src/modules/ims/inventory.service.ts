@@ -23,17 +23,28 @@ function decToNum(d: Prisma.Decimal | null): number | null {
 }
 
 // Stone totals are app-computed (schema): carat × per-carat, rounded to cents.
-// Returns undefined for a leg we can't compute so the caller can decide null.
-function stoneTotals(
-  weightCt: number | null,
-  wholesalePricePerCt: number | null,
-  costPerCt: number | null
-): { totalWholesalePrice: number | null; totalCost: number | null } {
+// A leg with no per-carat price computes to null rather than zero — "not priced"
+// and "priced at nothing" are different facts. Named fields, not positionals:
+// three interchangeable nullable numbers in a row is a swap waiting to happen.
+type PerCt = {
+  weightCt: number | null;
+  wholesalePricePerCt?: number | null;
+  costPerCt?: number | null;
+  retailPricePerCt?: number | null;
+};
+
+function stoneTotals(p: PerCt): {
+  totalWholesalePrice: number | null;
+  totalCost: number | null;
+  totalRetailPrice: number | null;
+} {
   const round2 = (n: number) => Math.round(n * 100) / 100;
+  const total = (perCt: number | null | undefined) =>
+    p.weightCt != null && perCt != null ? round2(p.weightCt * perCt) : null;
   return {
-    totalWholesalePrice:
-      weightCt != null && wholesalePricePerCt != null ? round2(weightCt * wholesalePricePerCt) : null,
-    totalCost: weightCt != null && costPerCt != null ? round2(weightCt * costPerCt) : null
+    totalWholesalePrice: total(p.wholesalePricePerCt),
+    totalCost: total(p.costPerCt),
+    totalRetailPrice: total(p.retailPricePerCt)
   };
 }
 
@@ -105,7 +116,7 @@ export function buildInboundItemCreateData(
   };
   if (input.itemType === "STONE") {
     const s = input.stone;
-    const totals = stoneTotals(s.weightCt, s.wholesalePricePerCt ?? null, s.costPerCt ?? null);
+    const totals = stoneTotals(s);
     const opening = parcelOpeningBalance(input.itemSubtype, s);
     return {
       ...core,
@@ -216,7 +227,7 @@ export async function createInventoryItem(
   let detail: Prisma.InventoryItemUncheckedCreateInput;
   if (input.itemType === "STONE") {
     const s = input.stone;
-    const totals = stoneTotals(s.weightCt, s.wholesalePricePerCt ?? null, s.costPerCt ?? null);
+    const totals = stoneTotals(s);
     detail = {
       ...core,
       sku: "", // replaced per attempt below
@@ -290,7 +301,11 @@ export async function updateInventoryItem(
         : decToNum(ex.wholesalePricePerCt);
     const costPerCt =
       input.stone.costPerCt !== undefined ? input.stone.costPerCt : decToNum(ex.costPerCt);
-    const totals = stoneTotals(weightCt, wholesalePricePerCt, costPerCt);
+    const retailPricePerCt =
+      input.stone.retailPricePerCt !== undefined
+        ? input.stone.retailPricePerCt
+        : decToNum(ex.retailPricePerCt);
+    const totals = stoneTotals({ weightCt, wholesalePricePerCt, costPerCt, retailPricePerCt });
     // Carry the parcel balance along with a weight/qty correction, but only
     // while nothing has been drawn yet (see rebaseUntouchedParcel).
     const rebased = rebaseUntouchedParcel(

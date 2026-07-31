@@ -172,7 +172,10 @@ function buildRawItem(category: ImsCsvCategory, get: RowGet): Record<string, unk
       treatment: str(get(["treatment"])),
       origin: str(get(["origin"])),
       costPerCt: num(get(["costpercarat", "costperct", "cost"])),
-      wholesalePricePerCt: num(get(["wholesalepercarat", "wholesaleperct", "wholesalepricepercarat"])),
+      // The 7-13 template heads these "Wholesale per carat"; Jennifer's 7-30 sheet
+      // says "Wholesale price per carat" / "Retail price per carat". Same columns.
+      wholesalePricePerCt: num(get(["wholesalepercarat", "wholesaleperct", "wholesalepricepercarat", "wholesalepriceperct", "wholesaleprice", "wholesale"])),
+      retailPricePerCt: num(get(["retailpercarat", "retailperct", "retailpricepercarat", "retailpriceperct", "retailprice", "retail"])),
       photo1Url: str(get(["image1", "photo1", "image"])),
       photo2Url: str(get(["image2", "photo2"])),
       videoUrl: str(get(["video"]))
