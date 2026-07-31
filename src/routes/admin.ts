@@ -28,9 +28,13 @@ import {
   listRequestsFromDb
 } from "../modules/admin/reads";
 import {
+  addSubstituteItems,
   approveRequestItem,
   completeRequestReview,
+  convertRequestToDocument,
+  declineRequest,
   rejectRequestItem,
+  removeSubstituteItem,
   setRequestItemPending,
   updateRequestExternalNote
 } from "../modules/admin/requests.service";
@@ -191,4 +195,59 @@ adminRouter.patch(
 adminRouter.post(
   "/requests/:id/complete-review",
   wrap(async (req, res) => res.json(await completeRequestReview(req.params.id)))
+);
+
+// Decline & close (#0036) — deny every remaining item + finalize the review.
+adminRouter.post(
+  "/requests/:id/decline",
+  wrap(async (req, res) => res.json(await declineRequest(req.params.id)))
+);
+
+// Convert an approved request into a Memo Out / Invoice (#0035, Option A). The
+// creating admin comes from the session (requireAdmin guarantees req.user).
+adminRouter.post(
+  "/requests/:id/convert",
+  wrap(async (req, res) => {
+    const result = await convertRequestToDocument(req.params.id, req.user!.id);
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.status(201).json({
+      document: result.document,
+      request: result.request,
+      ...(result.warning ? { warning: result.warning } : {})
+    });
+  })
+);
+
+// Add owned inventory items to a request as dealer-offered substitutes (#0038).
+adminRouter.post(
+  "/requests/:id/substitutes",
+  wrap(async (req, res) => {
+    const ids = (req.body as { inventoryItemIds?: unknown })?.inventoryItemIds;
+    if (!Array.isArray(ids) || !ids.every((v) => typeof v === "string")) {
+      res.status(400).json({ error: "inventoryItemIds must be an array of strings" });
+      return;
+    }
+    const result = await addSubstituteItems(req.params.id, ids as string[]);
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.status(201).json(result.request);
+  })
+);
+
+// Remove a dealer-added substitute line.
+adminRouter.delete(
+  "/request-items/:itemId",
+  wrap(async (req, res) => {
+    const result = await removeSubstituteItem(req.params.itemId);
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.json(result.request);
+  })
 );

@@ -61,7 +61,13 @@ export const AdminRequestItemSchema = z.object({
   vendor: z.string(),
   pricePerCarat: z.number(),
   totalPrice: z.number(),
-  status: AdminRequestItemStatusSchema
+  status: AdminRequestItemStatusSchema,
+  // H9 #0038 — true when RADIIA added this line as a substitute (it points at an
+  // owned InventoryItem), false for a normal client-requested feed line. The
+  // substitute's inventory id (present only when isSubstitute) lets convert draw
+  // the real stone down instead of receiving a fresh one.
+  isSubstitute: z.boolean(),
+  substituteInventoryItemId: z.string().nullable()
 });
 export type AdminRequestItem = z.infer<typeof AdminRequestItemSchema>;
 
@@ -73,8 +79,14 @@ export const AdminRequestSchema = z.object({
   companyId: z.string(),
   submittedByAccountId: z.string(),
   submittedAt: z.string(),
+  reviewedAt: z.string().nullable(),
   noteFromClient: z.string().nullable(),
   externalNote: z.string(),
+  // H9 convertReq (#0035): the Memo Out / Invoice this request became, or null.
+  // convertedDocumentNumber is the human number (MEM-####/INV-####) for the
+  // "Approved · MEM-####" label + click-through.
+  convertedDocumentId: z.string().nullable(),
+  convertedDocumentNumber: z.string().nullable(),
   items: z.array(AdminRequestItemSchema)
 });
 export type AdminRequest = z.infer<typeof AdminRequestSchema>;
