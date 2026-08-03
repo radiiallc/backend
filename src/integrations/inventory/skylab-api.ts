@@ -73,19 +73,25 @@ export type SkylabFetchResult = {
   stones: SkylabStone[];
 };
 
-// Fetches the full Skylab stock book. Throws (rather than returning empty) on any
-// failure — an empty return would let the ingest's stale sweep mass-flip every
-// Skylab stone to unavailable (Gate §5). Callers treat a throw as a failed run,
-// which alerts and leaves the table untouched.
-export async function fetchSkylabStock(): Promise<SkylabFetchResult> {
-  if (!env.skylabApiKey) {
-    throw new Error(
-      "SKYLAB_API_KEY is not set — cannot fetch the Skylab API. Set it in the backend env."
-    );
-  }
+// Transient-failure retry. Skylab's gateway intermittently 5xx's — one 502 used to
+// fail the entire run and email the operator, even though the next 15-min tick
+// succeeded unaided. Only infrastructure-shaped failures are worth another attempt:
+// a network error/timeout, a 5xx, or a 429. A 401 (wrong key), any other 4xx, and a
+// body that doesn't parse or doesn't match the schema are real problems that more
+// attempts cannot fix, so those still throw on the first try. Retries are marked by
+// wrapping the error rather than re-inspecting its message.
+class TransientSkylabError extends Error {}
 
-  const url = `${env.skylabApiUrl}${env.skylabApiPath}`;
+const RETRY_BASE_MS = 1_000;
+const RETRY_CAP_MS = 8_000;
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// One attempt. Throws TransientSkylabError for anything retryable, a plain Error
+// otherwise.
+async function fetchSkylabStockOnce(url: string): Promise<SkylabFetchResult> {
   let res: Response;
   try {
     res = await fetch(url, {
@@ -94,12 +100,16 @@ export async function fetchSkylabStock(): Promise<SkylabFetchResult> {
       signal: AbortSignal.timeout(env.skylabApiTimeoutMs)
     });
   } catch (err) {
+    // Connection reset, DNS blip, or our own timeout firing — all worth retrying.
     const reason = err instanceof Error ? err.message : String(err);
-    throw new Error(`Skylab API request to ${url} failed: ${reason}`);
+    throw new TransientSkylabError(`Skylab API request to ${url} failed: ${reason}`);
   }
 
   if (res.status === 401) {
     throw new Error("Skylab API returned 401 Unauthorized — check SKYLAB_API_KEY.");
+  }
+  if (res.status >= 500 || res.status === 429) {
+    throw new TransientSkylabError(`Skylab API returned HTTP ${res.status} from ${url}.`);
   }
   if (!res.ok) {
     throw new Error(`Skylab API returned HTTP ${res.status} from ${url}.`);
@@ -125,4 +135,47 @@ export async function fetchSkylabStock(): Promise<SkylabFetchResult> {
     count: parsed.data.count ?? null,
     stones: parsed.data.data
   };
+}
+
+// Fetches the full Skylab stock book, retrying transient failures with exponential
+// backoff. Throws (rather than returning empty) once attempts are exhausted — an
+// empty return would let the ingest's stale sweep mass-flip every Skylab stone to
+// unavailable (Gate §5). Callers treat a throw as a failed run, which alerts and
+// leaves the table untouched.
+//
+// Worst case a full set of attempts costs roughly attempts × SKYLAB_API_TIMEOUT_MS
+// plus backoff (~1.5 min at the defaults). That is well inside the scheduler's
+// in-flight guard, which simply skips the next tick if a run is still going.
+export async function fetchSkylabStock(): Promise<SkylabFetchResult> {
+  if (!env.skylabApiKey) {
+    throw new Error(
+      "SKYLAB_API_KEY is not set — cannot fetch the Skylab API. Set it in the backend env."
+    );
+  }
+
+  const url = `${env.skylabApiUrl}${env.skylabApiPath}`;
+  const maxAttempts = Math.max(1, env.skylabApiRetryAttempts);
+
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fetchSkylabStockOnce(url);
+    } catch (err) {
+      const transient = err instanceof TransientSkylabError;
+      const message = err instanceof Error ? err.message : String(err);
+
+      if (!transient || attempt >= maxAttempts) {
+        // Say how hard we tried — the alert email surfaces this text verbatim, and
+        // "after 3 attempts" is the difference between a blip and a real outage.
+        throw new Error(attempt > 1 ? `${message} (after ${attempt} attempts)` : message);
+      }
+
+      const delay = Math.min(RETRY_CAP_MS, RETRY_BASE_MS * 2 ** (attempt - 1));
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[skylab-api] ${message} — retrying in ${delay}ms ` +
+          `(attempt ${attempt + 1}/${maxAttempts})`
+      );
+      await sleep(delay);
+    }
+  }
 }

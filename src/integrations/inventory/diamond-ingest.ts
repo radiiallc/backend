@@ -457,12 +457,34 @@ async function evaluateAndAlert(outcome: IngestOutcome, rowsParsedTotal: number)
   const state = await prisma.ingestState.findUnique({ where: { id: "ingest" } });
   const alertActive = state?.alertActive ?? false;
   const lastAlertAt = state?.lastAlertAt ?? null;
+  const priorFailures = state?.consecutiveFailures ?? 0;
   const throttleMs = env.ingestAlertThrottleHours * 60 * 60 * 1000;
+  const minFailures = Math.max(1, env.ingestAlertMinConsecutiveFailures);
 
   if (isAlert) {
+    const consecutiveFailures = priorFailures + 1;
+
+    // Hold the first N-1 failures of a streak. The feed re-runs every 15 minutes,
+    // and a transient vendor failure (a Skylab 5xx, a momentary FTP drop) is
+    // already fixed by the time anyone opens the email — so waiting for a second
+    // consecutive failure is what separates "needs attention" from noise. Runs are
+    // still recorded in IngestRun either way, so nothing is hidden from history.
+    if (consecutiveFailures < minFailures) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[ingest] alert-worthy run ${consecutiveFailures}/${minFailures} — ` +
+          `holding email pending the next run: ${reason}`
+      );
+      await setAlertState({ consecutiveFailures });
+      return;
+    }
+
     const throttleElapsed =
       !lastAlertAt || Date.now() - lastAlertAt.getTime() >= throttleMs;
-    if (alertActive && !throttleElapsed) return; // already alerted recently
+    if (alertActive && !throttleElapsed) {
+      await setAlertState({ consecutiveFailures }); // already alerted recently
+      return;
+    }
 
     await sendIngestFailureAlert({
       reason,
@@ -477,9 +499,10 @@ async function evaluateAndAlert(outcome: IngestOutcome, rowsParsedTotal: number)
       })),
       skippedFiles: outcome.skippedFiles,
       errorText: outcome.errorText ?? null,
-      repeated: alertActive
+      repeated: alertActive,
+      consecutiveFailures
     });
-    await setAlertState({ alertActive: true, lastAlertAt: new Date() });
+    await setAlertState({ alertActive: true, lastAlertAt: new Date(), consecutiveFailures });
     return;
   }
 
@@ -488,11 +511,19 @@ async function evaluateAndAlert(outcome: IngestOutcome, rowsParsedTotal: number)
       rowsUpsertedTotal: outcome.rowsUpsertedTotal,
       source: outcome.source ?? null
     });
-    await setAlertState({ alertActive: false });
+    await setAlertState({ alertActive: false, consecutiveFailures: 0 });
+    return;
   }
+
+  // Healthy run that ends a held (never-emailed) streak — clear it silently.
+  if (priorFailures > 0) await setAlertState({ consecutiveFailures: 0 });
 }
 
-async function setAlertState(data: { alertActive: boolean; lastAlertAt?: Date }): Promise<void> {
+async function setAlertState(data: {
+  alertActive?: boolean;
+  lastAlertAt?: Date;
+  consecutiveFailures?: number;
+}): Promise<void> {
   await prisma.ingestState.upsert({
     where: { id: "ingest" },
     create: { id: "ingest", ...data },

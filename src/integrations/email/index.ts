@@ -205,6 +205,10 @@ export async function sendIngestFailureAlert(args: {
   skippedFiles: { name: string; reason: string }[];
   errorText?: string | null;
   repeated: boolean;
+  // Length of the current streak of failed runs. Alerts are held until this
+  // reaches INGEST_ALERT_MIN_CONSECUTIVE_FAILURES, so "2 consecutive runs" in the
+  // body is the reader's signal that this is sustained rather than a one-off blip.
+  consecutiveFailures?: number;
 }): Promise<void> {
   const fileLines =
     args.files.length > 0
@@ -220,6 +224,10 @@ export async function sendIngestFailureAlert(args: {
       : "";
   const errorBlock = args.errorText ? `\nError:\n${args.errorText}\n` : "";
   const prefix = args.repeated ? "[STILL FAILING] " : "";
+  const streakLine =
+    args.consecutiveFailures && args.consecutiveFailures > 1
+      ? `Consecutive failed runs: ${args.consecutiveFailures}\n`
+      : "";
 
   await sendPlainText({
     to: env.notificationEmail,
@@ -230,7 +238,9 @@ export async function sendIngestFailureAlert(args: {
       `Status: ${args.status}\n` +
       `Source: ${args.source ?? "n/a"}\n` +
       `Duration: ${(args.durationMs / 1000).toFixed(1)}s\n` +
-      `Rows upserted: ${args.rowsUpsertedTotal}\n\n` +
+      `Rows upserted: ${args.rowsUpsertedTotal}\n` +
+      streakLine +
+      `\n` +
       `Files:\n${fileLines}\n` +
       skippedLines +
       errorBlock +

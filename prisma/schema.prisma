@@ -326,6 +326,10 @@ model IngestState {
   // it flips back to false (with a recovery email) once a healthy run lands.
   alertActive   Boolean   @default(false)
   lastAlertAt   DateTime?
+  // Streak of consecutive alert-worthy runs, reset by any healthy run. The first
+  // N-1 are held silently (INGEST_ALERT_MIN_CONSECUTIVE_FAILURES) so a transient
+  // vendor failure that self-heals on the next tick never emails anyone.
+  consecutiveFailures Int  @default(0)
   updatedAt     DateTime  @updatedAt
 }
 
