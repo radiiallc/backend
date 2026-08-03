@@ -1,10 +1,15 @@
 /**
- * csv-import — forgiving parser turning an uploaded inventory CSV (Jennifer's
+ * csv-import — forgiving parser turning an uploaded inventory sheet (Jennifer's
  * 7-13 template, one tab/category) into inbound item payloads for a Bill In /
  * Memo In. Diamonds + Gems share the STONE shape; Jewelry / Other map to their
  * detail tables. See docs/phase-h/inventory-schema-baseline.md §4 for the column
  * maps. This module PARSES ONLY — the caller previews, then POSTs the ok items to
  * the existing inbound-create endpoint.
+ *
+ * Takes .xlsx as well as .csv: Jennifer works in Excel, so the workbook is read
+ * directly (see xlsx-import) rather than making her re-save every file. Both
+ * formats reduce to the same string grid, so all the matching rules below apply
+ * identically whichever she sends.
  *
  * Forgiving by design: headers match case/space/punctuation-insensitively with
  * aliases; a header's trailing "(…)" hint is ignored; money/number cells tolerate
@@ -22,6 +27,8 @@ import {
   type ImsInboundItemInput,
   type ImsParseInboundCsvResult
 } from "@/contract";
+
+import { isLegacyXls, isZipArchive, readWorkbookGrid, WorkbookError } from "./xlsx-import";
 
 // "RADIIA SKU" → "radiiasku"; "Stone Type (Natural, Lab)" → "stonetype";
 // "Cost per carat" → "costpercarat". Drop any "(…)" hint, keep a–z0–9. "%" → "pct"
@@ -252,38 +259,35 @@ function friendlyError(issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey>;
   return `${label} ${msg}`;
 }
 
-export function parseInventoryCsv(category: ImsCsvCategory, csvText: string): ImsParseInboundCsvResult {
-  let records: string[][];
-  try {
-    records = parse(csvText, {
-      skip_empty_lines: true,
-      trim: true,
-      bom: true,
-      relax_column_count: true
-    }) as string[][];
-  } catch (e) {
-    const detail = e instanceof Error ? e.message : "could not read the file";
-    return {
-      category,
-      totalRows: 0,
-      okCount: 0,
-      errorCount: 1,
-      rows: [{ rowNumber: 0, sku: null, ok: false, error: `CSV parse failed: ${detail}`, item: null }],
-      items: []
-    };
-  }
+// A whole-file failure, shaped like a normal result so the preview can render it
+// the same way as a bad row instead of the caller special-casing an exception.
+function fileError(category: ImsCsvCategory, error: string, sheetName: string | null = null): ImsParseInboundCsvResult {
+  return {
+    category,
+    sheetName,
+    totalRows: 0,
+    okCount: 0,
+    errorCount: 1,
+    rows: [{ rowNumber: 0, sku: null, ok: false, error, item: null }],
+    items: []
+  };
+}
 
+// The shared core: a string grid (row 0 = header) → validated inbound items.
+// CSV text and .xlsx cells both arrive here, so the two formats can't drift.
+function parseRecords(
+  category: ImsCsvCategory,
+  records: string[][],
+  sheetName: string | null
+): ImsParseInboundCsvResult {
   if (records.length < 2) {
-    return {
+    return fileError(
       category,
-      totalRows: 0,
-      okCount: 0,
-      errorCount: 1,
-      rows: [
-        { rowNumber: 0, sku: null, ok: false, error: "No data rows found (expected a header row + at least one item).", item: null }
-      ],
-      items: []
-    };
+      sheetName
+        ? `No data rows on the "${sheetName}" tab (expected a header row + at least one item) — check the category matches the tab.`
+        : "No data rows found (expected a header row + at least one item).",
+      sheetName
+    );
   }
 
   const headerIndex = new Map<string, number>();
@@ -324,10 +328,67 @@ export function parseInventoryCsv(category: ImsCsvCategory, csvText: string): Im
   const errorCount = rows.filter((r) => !r.ok).length;
   return {
     category,
+    sheetName,
     totalRows: rows.length,
     okCount: rows.length - errorCount,
     errorCount,
     rows,
     items
   };
+}
+
+export function parseInventoryCsv(category: ImsCsvCategory, csvText: string): ImsParseInboundCsvResult {
+  let records: string[][];
+  try {
+    records = parse(csvText, {
+      skip_empty_lines: true,
+      trim: true,
+      bom: true,
+      relax_column_count: true
+    }) as string[][];
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : "could not read the file";
+    return fileError(category, `CSV parse failed: ${detail}`);
+  }
+  return parseRecords(category, records, null);
+}
+
+// Excel's "Unicode Text" export is UTF-16LE; everything else is UTF-8 (whose BOM
+// csv-parse strips itself). Sniffing the BOM keeps a wrongly-saved CSV readable
+// instead of failing on a header full of NUL bytes.
+function decodeText(bytes: Buffer): string {
+  if (bytes.length > 1 && bytes[0] === 0xff && bytes[1] === 0xfe) return bytes.toString("utf16le", 2);
+  if (bytes.length > 1 && bytes[0] === 0xfe && bytes[1] === 0xff) {
+    return bytes.subarray(2).swap16().toString("utf16le");
+  }
+  return bytes.toString("utf8");
+}
+
+/**
+ * Parse an uploaded file, whatever it is. Routes on content rather than the file
+ * name — a workbook renamed .csv is still a workbook — and falls back to CSV so
+ * an oddly-named text export still imports.
+ */
+export function parseInventoryUpload(category: ImsCsvCategory, bytes: Buffer): ImsParseInboundCsvResult {
+  if (bytes.length === 0) return fileError(category, "That file is empty.");
+
+  if (isZipArchive(bytes)) {
+    try {
+      const { sheetName, records } = readWorkbookGrid(bytes, category);
+      return parseRecords(category, records, sheetName);
+    } catch (e) {
+      if (e instanceof WorkbookError) return fileError(category, `Could not read that workbook — ${e.message}.`);
+      const detail = e instanceof Error ? e.message : "unknown error";
+      return fileError(category, `Excel read failed: ${detail}`);
+    }
+  }
+
+  if (isLegacyXls(bytes)) {
+    return fileError(
+      category,
+      "That's an old .xls workbook. Open it in Excel and re-save as .xlsx (or .csv), then import again."
+    );
+  }
+
+  return parseInventoryCsv(category, decodeText(bytes));
 }

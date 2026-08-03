@@ -36,7 +36,11 @@ app.use(
     credentials: true
   })
 );
-app.use(express.json());
+// 20mb, not the 100kb default: the inventory importer posts an uploaded .xlsx as
+// base64 in the JSON body (same authenticated path as every other admin call),
+// and base64 adds a third on top of the file. Jennifer's sheets are tens of KB,
+// so this is headroom rather than a target.
+app.use(express.json({ limit: "20mb" }));
 app.use(cookieParser());
 app.use(attachUser);
 
