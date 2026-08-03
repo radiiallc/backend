@@ -19,6 +19,12 @@ import {
 import { IMS_DOC_INCLUDE, prismaDocToDto } from "./documents.mappers";
 import { buildInboundItemCreateData, mintSkuBatch } from "./inventory.service";
 import { type ResolvedDraw, resolveDraw, reverseDraw } from "./parcel";
+import {
+  type ExistingItem,
+  type RestockPlan,
+  RESTOCK_ITEM_SELECT,
+  resolveRestock
+} from "./restock";
 
 function isUniqueViolation(e: unknown): boolean {
   return e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002";
@@ -586,32 +592,101 @@ export async function createInboundDocument(
   // up front so a bad upload fails cleanly instead of half-importing.
   const providedSkus = input.items.map((it) => (it.sku ?? "").trim() || null);
   const providedList = providedSkus.filter((s): s is string => s !== null);
+
+  // Two rows in ONE upload claiming the same SKU stays an error. Buying more of
+  // a SKU is a real event (handled below); the same SKU twice in one sheet is a
+  // copy-paste, and folding them silently would hide it. Splitting the file into
+  // two receipts is the honest way to record two purchases.
   if (new Set(providedList).size !== providedList.length) {
-    return { ok: false, error: "The upload has duplicate RADIIA SKUs." };
+    const seen = new Set<string>();
+    const dupes = Array.from(
+      new Set(providedList.filter((s) => (seen.has(s) ? true : (seen.add(s), false))))
+    );
+    return {
+      ok: false,
+      error: `The upload lists the same RADIIA SKU more than once: ${dupes.join(", ")}. Combine those rows, or receive them on separate documents.`
+    };
   }
+
+  // A SKU already in stock is a RESTOCK, not a collision (Jennifer 2026-08-03):
+  // the carats arriving are added to the balance instead of minting a second row
+  // under the same number. Every plan is resolved BEFORE the transaction so an
+  // impossible merge — a single stone, a type mismatch — rejects the whole
+  // document without a partial write, exactly as the SKU guard used to.
+  const existingBySku = new Map<string, ExistingItem>();
   if (providedList.length > 0) {
-    const clash = await prisma.inventoryItem.findMany({
+    const rows = await prisma.inventoryItem.findMany({
       where: { sku: { in: providedList } },
-      select: { sku: true }
+      select: RESTOCK_ITEM_SELECT
     });
-    if (clash.length > 0) {
-      return { ok: false, error: `SKU already in inventory: ${clash.map((c) => c.sku).join(", ")}` };
-    }
+    for (const row of rows) existingBySku.set(row.sku, row);
+  }
+
+  const restockPlans = new Map<number, RestockPlan>();
+  for (let i = 0; i < input.items.length; i++) {
+    const sku = providedSkus[i];
+    const existing = sku === null ? undefined : existingBySku.get(sku);
+    if (!existing) continue;
+    const resolved = resolveRestock(existing, input.items[i]);
+    if (!resolved.ok) return { ok: false, error: resolved.error };
+    restockPlans.set(i, resolved.plan);
   }
 
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const docId = await prisma.$transaction(
         async (tx) => {
-          // Mint only for items without a preserved SKU, then weave the two back
-          // into item order.
-          const minted = await mintSkuBatch(tx, providedSkus.filter((s) => s === null).length);
+          // Mint only for items that are neither restocks nor already carrying a
+          // preserved SKU, then weave the three back into item order.
+          const needsMint = providedSkus.filter((s, i) => s === null && !restockPlans.has(i)).length;
+          const minted = await mintSkuBatch(tx, needsMint);
           let mi = 0;
-          const skus = providedSkus.map((s) => s ?? minted[mi++]);
+          const skus = providedSkus.map((s, i) => (restockPlans.has(i) ? s! : (s ?? minted[mi++])));
 
           const lines: Array<{ inventoryItemId: string } & ReturnType<typeof costSnapshot>> = [];
           const createdItemIds: string[] = [];
+          const restoredItemIds: Array<{ id: string; from: string }> = [];
           for (let i = 0; i < input.items.length; i++) {
+            const plan = restockPlans.get(i);
+
+            // Restock: add to the item already there. The line records what
+            // ARRIVED (not the new total) — the vendor billed us for these
+            // carats, not for the lot we already owned.
+            if (plan) {
+              if (plan.stoneUpdate) {
+                await tx.stoneDetail.update({
+                  where: { inventoryItemId: plan.itemId },
+                  data: plan.stoneUpdate
+                });
+              } else if (plan.jewelryUpdate) {
+                await tx.jewelryDetail.update({
+                  where: { inventoryItemId: plan.itemId },
+                  data: plan.jewelryUpdate
+                });
+              } else if (plan.materialUpdate) {
+                await tx.otherMaterialDetail.update({
+                  where: { inventoryItemId: plan.itemId },
+                  data: plan.materialUpdate
+                });
+              }
+              // A lot that had sold out is back on the shelf.
+              if (plan.restoreToInStock) {
+                await tx.inventoryItem.update({
+                  where: { id: plan.itemId },
+                  data: { status: "IN_STOCK" }
+                });
+                restoredItemIds.push({ id: plan.itemId, from: "SOLD" });
+              }
+              lines.push({
+                inventoryItemId: plan.itemId,
+                quantity: plan.receivedQty,
+                caratWeight: plan.receivedCt,
+                unitPrice: plan.unitCost,
+                totalPrice: plan.totalCost
+              });
+              continue;
+            }
+
             const data = buildInboundItemCreateData(input.items[i], input.vendorId, skus[i]);
             const item = await tx.inventoryItem.create({
               data,
@@ -651,6 +726,21 @@ export async function createInboundDocument(
               data: {
                 inventoryItemId,
                 previousStatus: null,
+                newStatus: "IN_STOCK",
+                documentId: doc.id,
+                changedById: createdById
+              }
+            });
+          }
+
+          // A restock only earns an audit row when it actually moved the status
+          // (a sold-out lot coming back). Topping up a lot that was already in
+          // stock changes no status, and the document line is the record of it.
+          for (const { id, from } of restoredItemIds) {
+            await tx.itemStatusHistory.create({
+              data: {
+                inventoryItemId: id,
+                previousStatus: from as ItemWithDetails["status"],
                 newStatus: "IN_STOCK",
                 documentId: doc.id,
                 changedById: createdById
