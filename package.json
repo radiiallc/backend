@@ -25,6 +25,10 @@
     "migrate:deploy": "prisma migrate deploy",
 
     "smoke:parcel": "dotenv -e .env.dev -- tsx scripts/parcel-smoke.ts",
+    "smoke:restock": "dotenv -e .env.dev -- tsx scripts/restock-smoke.ts",
+
+    "purge:prod": "dotenv -e .env.local -- tsx scripts/inventory-purge.ts",
+    "purge:dev": "dotenv -e .env.dev -- tsx scripts/inventory-purge.ts",
 
     "skylab:fetch": "dotenv -e .env.local -- tsx scripts/skylab-api.ts fetch",
     "skylab:reconcile": "dotenv -e .env.local -- tsx scripts/skylab-api.ts reconcile"

@@ -57,6 +57,7 @@ import {
 } from "../modules/ims/reads";
 import { parseInventoryCsv, parseInventoryUpload } from "../modules/ims/csv-import";
 import { enrichInboundCsvWithGia } from "../modules/ims/gia-enrich";
+import { annotateRestocks } from "../modules/ims/restock";
 import { lookupGiaReport } from "../modules/ims/gia.service";
 import { createVendor, updateVendor } from "../modules/ims/vendors.service";
 import { addVocabularyValue } from "../modules/ims/vocabulary.service";
@@ -475,14 +476,19 @@ imsRouter.post(
       res.status(400).json({ error: "Invalid CSV import payload" });
       return;
     }
-    const { category, csv, fileBase64 } = parsed.data;
+    const { category, csv, fileBase64, vendorId } = parsed.data;
     // An upload may arrive as a bare base64 string or a data: URL, depending on
     // how the client read the file — accept both, then let the parser route on
     // the decoded bytes (.xlsx workbook vs CSV text).
-    const result = csv
+    const parsedRows = csv
       ? parseInventoryCsv(category, csv)
       : parseInventoryUpload(category, Buffer.from(fileBase64!.replace(/^data:[^,]*,/, ""), "base64"));
-    res.json(parsed.data.enrichGia ? await enrichInboundCsvWithGia(result) : result);
+    const enriched = parsed.data.enrichGia
+      ? await enrichInboundCsvWithGia(parsedRows)
+      : parsedRows;
+    // Last: a row whose SKU is already in stock is a top-up, not a new item, and
+    // the preview has to say so before anything is committed.
+    res.json(await annotateRestocks(enriched, vendorId ?? null));
   })
 );
 

@@ -630,6 +630,10 @@ export const ImsParseInboundCsvSchema = z
     csv: z.string().min(1).optional(),
     fileBase64: z.string().min(1).optional(),
     fileName: z.string().max(255).optional(),
+    // The vendor the draft document is addressed to, when one is picked. Used
+    // only to tell the preview whether a row that tops up existing stock is
+    // topping up a lot that came in under a DIFFERENT vendor.
+    vendorId: z.string().min(1).optional(),
     // Opt-in: after parsing, look each STONE row's Cert No up on GIA and fill the
     // grade fields (4Cs, measurements, depth%/table%, cut/polish/symmetry) from the
     // report — authoritative where GIA has a value, the CSV value kept on any miss.
@@ -653,9 +657,27 @@ export interface ImsCsvGiaOutcome {
   appliedFields: string[]; // stone fields set from GIA (empty unless `enriched`)
 }
 
+// A row whose RADIIA SKU is already in stock ADDS to that lot rather than
+// creating a second row under the same number (see modules/ims/restock.ts). The
+// preview says so up front: "this row will change stock you already own" is
+// exactly the thing an importer must not discover after the fact.
+export interface ImsCsvRestockOutcome {
+  existingItemId: string;
+  // Balance and lot size before this receipt, so the preview can show the move.
+  currentCt: number | null;
+  currentQty: number | null;
+  addedCt: number | null;
+  addedQty: number | null;
+  // The lot's current owner. A top-up leaves it alone — worth surfacing when the
+  // receipt is from a different vendor than the one the stock came in under.
+  vendorName: string | null;
+  vendorDiffers: boolean;
+}
+
 // One data row's outcome. `item` is the validated inbound payload when ok; `error`
 // is a friendly reason when not. `rowNumber` is 1-based over data rows (no header).
 // `gia` is set only when enrichGia was requested and the row was reached.
+// `restock` is set only when the row's SKU is already in inventory.
 export interface ImsCsvRowResult {
   rowNumber: number;
   sku: string | null;
@@ -663,6 +685,7 @@ export interface ImsCsvRowResult {
   error: string | null;
   item: ImsInboundItemInput | null;
   gia?: ImsCsvGiaOutcome | null;
+  restock?: ImsCsvRestockOutcome | null;
 }
 export interface ImsParseInboundCsvResult {
   category: ImsCsvCategory;
@@ -673,6 +696,9 @@ export interface ImsParseInboundCsvResult {
   totalRows: number;
   okCount: number;
   errorCount: number;
+  // How many of the ok rows top up stock that already exists (rather than
+  // creating a new item). Zero on a normal first-time import.
+  restockCount: number;
   rows: ImsCsvRowResult[];
   items: ImsInboundItemInput[];
 }

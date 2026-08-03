@@ -268,6 +268,7 @@ function fileError(category: ImsCsvCategory, error: string, sheetName: string | 
     totalRows: 0,
     okCount: 0,
     errorCount: 1,
+    restockCount: 0,
     rows: [{ rowNumber: 0, sku: null, ok: false, error, item: null }],
     items: []
   };
@@ -332,6 +333,9 @@ function parseRecords(
     totalRows: rows.length,
     okCount: rows.length - errorCount,
     errorCount,
+    // Set by annotateRestocks once the parse is checked against live inventory;
+    // a bare parse knows nothing about what is already in stock.
+    restockCount: 0,
     rows,
     items
   };
