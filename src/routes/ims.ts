@@ -55,7 +55,7 @@ import {
   listVendorsFromDb,
   listVocabularyFromDb
 } from "../modules/ims/reads";
-import { parseInventoryCsv } from "../modules/ims/csv-import";
+import { parseInventoryCsv, parseInventoryUpload } from "../modules/ims/csv-import";
 import { enrichInboundCsvWithGia } from "../modules/ims/gia-enrich";
 import { lookupGiaReport } from "../modules/ims/gia.service";
 import { createVendor, updateVendor } from "../modules/ims/vendors.service";
@@ -475,7 +475,13 @@ imsRouter.post(
       res.status(400).json({ error: "Invalid CSV import payload" });
       return;
     }
-    const result = parseInventoryCsv(parsed.data.category, parsed.data.csv);
+    const { category, csv, fileBase64 } = parsed.data;
+    // An upload may arrive as a bare base64 string or a data: URL, depending on
+    // how the client read the file — accept both, then let the parser route on
+    // the decoded bytes (.xlsx workbook vs CSV text).
+    const result = csv
+      ? parseInventoryCsv(category, csv)
+      : parseInventoryUpload(category, Buffer.from(fileBase64!.replace(/^data:[^,]*,/, ""), "base64"));
     res.json(parsed.data.enrichGia ? await enrichInboundCsvWithGia(result) : result);
   })
 );

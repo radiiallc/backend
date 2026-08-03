@@ -620,15 +620,25 @@ export const IMS_CSV_CATEGORIES = ["diamonds", "gems", "jewelry", "other"] as co
 export const ImsCsvCategorySchema = z.enum(IMS_CSV_CATEGORIES);
 export type ImsCsvCategory = z.infer<typeof ImsCsvCategorySchema>;
 
-export const ImsParseInboundCsvSchema = z.object({
-  category: ImsCsvCategorySchema,
-  csv: z.string().min(1),
-  // Opt-in: after parsing, look each STONE row's Cert No up on GIA and fill the
-  // grade fields (4Cs, measurements, depth%/table%, cut/polish/symmetry) from the
-  // report — authoritative where GIA has a value, the CSV value kept on any miss.
-  // Off by default (parse stays a fast, network-free dry run).
-  enrichGia: z.boolean().optional()
-});
+// Either pasted text (`csv`) or an uploaded file (`fileBase64`) — never both.
+// The file is base64 in JSON rather than multipart so the request keeps the same
+// authenticated JSON path as every other admin call; .xlsx is binary, and the
+// server routes on the decoded bytes, so `fileName` is for display only.
+export const ImsParseInboundCsvSchema = z
+  .object({
+    category: ImsCsvCategorySchema,
+    csv: z.string().min(1).optional(),
+    fileBase64: z.string().min(1).optional(),
+    fileName: z.string().max(255).optional(),
+    // Opt-in: after parsing, look each STONE row's Cert No up on GIA and fill the
+    // grade fields (4Cs, measurements, depth%/table%, cut/polish/symmetry) from the
+    // report — authoritative where GIA has a value, the CSV value kept on any miss.
+    // Off by default (parse stays a fast, network-free dry run).
+    enrichGia: z.boolean().optional()
+  })
+  .refine((d) => (d.csv ? 1 : 0) + (d.fileBase64 ? 1 : 0) === 1, {
+    message: "Provide either pasted CSV rows or an uploaded file"
+  });
 export type ImsParseInboundCsv = z.infer<typeof ImsParseInboundCsvSchema>;
 
 // Per-row GIA enrichment outcome (only present when enrichGia was requested).
@@ -656,6 +666,10 @@ export interface ImsCsvRowResult {
 }
 export interface ImsParseInboundCsvResult {
   category: ImsCsvCategory;
+  // Which workbook tab was read (null for CSV). Jennifer's template is one tab
+  // per category, so the preview names it — a wrong tab is otherwise invisible
+  // until the items are already on the document.
+  sheetName: string | null;
   totalRows: number;
   okCount: number;
   errorCount: number;
