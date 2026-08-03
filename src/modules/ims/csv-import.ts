@@ -158,6 +158,10 @@ function buildRawItem(category: ImsCsvCategory, get: RowGet): Record<string, unk
       color,
       fancyColor,
       clarity: str(get(["clarity"])),
+      // Cut grade is absent from the 7-13 template (baseline §4 note 12 left it
+      // "GIA auto-populate only"), but a real vendor sheet usually has the column
+      // and dropping it silently loses a grade we store, show and price on.
+      cutGrade: str(get(["cut", "cutgrade"])),
       polish: str(get(["pol", "polish"])),
       symmetry: str(get(["symm", "symmetry"])),
       fluorescence: str(get(["fluo", "fluorescence", "fluor"])),
