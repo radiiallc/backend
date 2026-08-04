@@ -30,6 +30,18 @@ function isUniqueViolation(e: unknown): boolean {
   return e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002";
 }
 
+// The instant a document is issued at. The operator picks a calendar DAY
+// (YYYY-MM-DD from the admin's date field); we anchor it at noon UTC so the day
+// survives the round-trip — the read mapper serializes with toISOString() and
+// the admin slices the first 10 chars, which would roll a UTC-midnight stamp
+// back one day for anyone reading it from a western timezone. No date given
+// (every pre-existing caller) keeps the old behaviour: the current instant.
+// Terms are counted from THIS date, so a back-dated Bill In is due on the day
+// the vendor's terms actually run out, not 30 days from data entry.
+function issuedAt(isoDay: string | undefined): Date {
+  return isoDay ? new Date(`${isoDay}T12:00:00.000Z`) : new Date();
+}
+
 export type CreateDocumentResult =
   | { ok: true; document: ImsDocument }
   | { ok: false; error: string };
@@ -244,10 +256,10 @@ export async function createOutboundDocument(
     });
   }
 
-  const now = new Date();
+  const issueDate = issuedAt(input.issueDate);
   const dueDate =
     type === "MEMO_OUT" && client.defaultMemoTermsDays
-      ? new Date(now.getTime() + client.defaultMemoTermsDays * 86_400_000)
+      ? new Date(issueDate.getTime() + client.defaultMemoTermsDays * 86_400_000)
       : null;
 
   const newItemStatus = NEW_ITEM_STATUS[type];
@@ -269,7 +281,7 @@ export async function createOutboundDocument(
         documentNumber,
         status: "OPEN",
         clientId: input.clientId,
-        issueDate: now,
+        issueDate,
         dueDate,
         discountAmount: input.discountAmount ?? null,
         notes: input.notes ?? null,
@@ -511,7 +523,7 @@ export async function createPurchaseOrder(
   }
 
   const lines = items.map((item) => ({ itemId: item.id, ...costSnapshot(item) }));
-  const now = new Date();
+  const issueDate = issuedAt(input.issueDate);
 
   const docId = await prisma.$transaction(async (tx) => {
     const seq = await tx.documentSequence.upsert({
@@ -527,7 +539,7 @@ export async function createPurchaseOrder(
         documentNumber,
         status: "OPEN",
         vendorId: input.vendorId,
-        issueDate: now,
+        issueDate,
         discountAmount: input.discountAmount ?? null,
         notes: input.notes ?? null,
         createdById,
@@ -568,7 +580,8 @@ export async function createPurchaseOrder(
 //     are priced at COST (the vendor-facing basis), lineStatus IN_STOCK.
 //   • Each new item gets a null -> IN_STOCK ItemStatusHistory row pointing at this
 //     doc: receiving here IS "through a document" (contrast the manual inventory
-//     create, which writes none). dueDate pre-fills from the vendor's terms.
+//     create, which writes none). dueDate = the caller's issueDate (today when
+//     omitted) plus the vendor's terms, so a back-dated receipt is due on time.
 // Transactional with a batch SKU mint + whole-tx retry on a sku race. NOTE: a very
 // large bulk migration (case A) may need chunking/timeout tuning; the ongoing
 // per-document receive (case B) is well within one tx.
@@ -582,10 +595,10 @@ export async function createInboundDocument(
   });
   if (!vendor) return { ok: false, error: "Vendor not found" };
 
-  const now = new Date();
+  const issueDate = issuedAt(input.issueDate);
   const termDays =
     input.type === "MEMO_IN" ? vendor.defaultMemoTermsDays : vendor.defaultInvoiceTermsDays;
-  const dueDate = termDays ? new Date(now.getTime() + termDays * 86_400_000) : null;
+  const dueDate = termDays ? new Date(issueDate.getTime() + termDays * 86_400_000) : null;
 
   // SKU strategy: honor a caller-supplied SKU (bulk-CSV migration preserving the
   // template's "RADIIA SKU" column); auto-mint for any item without one. Validate
@@ -703,7 +716,7 @@ export async function createInboundDocument(
               externalReference: input.externalReference ?? null,
               status: "OPEN",
               vendorId: input.vendorId,
-              issueDate: now,
+              issueDate,
               dueDate,
               notes: input.notes ?? null,
               createdById,
