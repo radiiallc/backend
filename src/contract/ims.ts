@@ -516,10 +516,26 @@ export const ImsDocumentLineDrawSchema = z.object({
 });
 export type ImsDocumentLineDraw = z.infer<typeof ImsDocumentLineDrawSchema>;
 
+// The date the document is ISSUED, as the admin's date field sends it (calendar
+// day, no time). Optional on every create: omit it and the server stamps the
+// current instant, which is what every caller did before the field was editable.
+// A back-dated receipt is ordinary — a vendor's Bill In is entered days after it
+// was written — so no "not in the future/past" rule is imposed here.
+export const ImsIssueDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "Issue date must be a calendar date (YYYY-MM-DD)")
+  // Round-trip, not just a validity check: JS silently ROLLS an overflowing day
+  // over ("2026-02-31" parses as Mar 3), which would file the document under a
+  // month the operator never picked.
+  .refine((s) => new Date(`${s}T12:00:00.000Z`).toISOString().slice(0, 10) === s, {
+    message: "Issue date is not a real calendar date"
+  });
+
 export const ImsCreateDocumentSchema = z
   .object({
     type: z.enum(["MEMO_OUT", "INVOICE"]),
     clientId: z.string().min(1),
+    issueDate: ImsIssueDateSchema.optional(),
     // Legacy whole-item form. Still accepted and still means "the entire item",
     // so every existing admin call keeps working untouched.
     inventoryItemIds: z.array(z.string().min(1)).min(1).optional(),
@@ -549,6 +565,7 @@ export type ImsRecordReturn = z.infer<typeof ImsRecordReturnSchema>;
 // item status (the PO is the order; a later Bill In receives the goods).
 export const ImsCreatePurchaseOrderSchema = z.object({
   vendorId: z.string().min(1),
+  issueDate: ImsIssueDateSchema.optional(),
   inventoryItemIds: z.array(z.string().min(1)).min(1),
   discountAmount: z.number().nonnegative().optional(),
   notes: z.string().optional()
@@ -603,6 +620,7 @@ export type ImsInboundItemInput = z.infer<typeof ImsInboundItemInputSchema>;
 export const ImsCreateInboundDocumentSchema = z.object({
   type: z.enum(["BILL_IN", "MEMO_IN"]),
   vendorId: z.string().min(1),
+  issueDate: ImsIssueDateSchema.optional(),
   externalReference: z.string().optional(),
   notes: z.string().optional(),
   items: z.array(ImsInboundItemInputSchema).min(1)
