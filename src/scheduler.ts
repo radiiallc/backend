@@ -99,6 +99,14 @@ export function startPgStatStatementsMaintenance(): void {
     console.log("[pg-stat-maint] disabled (set PG_STAT_RESET_HOURS>0 to enable)");
     return;
   }
+  // extensions.pg_stat_statements only exists on the Supabase project this
+  // targets in production; local dev points at a plain Postgres instance with
+  // no such schema, so every run would fail with 3F000 and just log noise.
+  if (!env.databaseUrl.includes(".supabase.co")) {
+    // eslint-disable-next-line no-console
+    console.log("[pg-stat-maint] disabled (DATABASE_URL is not a Supabase project)");
+    return;
+  }
   const intervalMs = hours * 60 * 60_000;
   // eslint-disable-next-line no-console
   console.log(`[pg-stat-maint] enabled — resetting pg_stat_statements every ${hours}h`);
