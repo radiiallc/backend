@@ -10,28 +10,23 @@
     "typecheck": "tsc --noEmit",
     "build": "prisma generate",
     "db:generate": "prisma generate",
-
     "migrate:dev": "dotenv -e .env.dev -- prisma migrate dev",
     "migrate:status:dev": "dotenv -e .env.dev -- prisma migrate status",
     "migrate:reset:dev": "dotenv -e .env.dev -- prisma migrate reset",
     "seed:dev": "dotenv -e .env.dev -- tsx prisma/seed.ts",
     "studio:dev": "dotenv -e .env.dev -- prisma studio",
-
     "migrate:prod": "dotenv -e .env.local -- prisma migrate deploy",
     "migrate:status:prod": "dotenv -e .env.local -- prisma migrate status",
     "seed:prod": "dotenv -e .env.local -- tsx prisma/seed.ts",
     "studio:prod": "dotenv -e .env.local -- prisma studio",
-
     "migrate:deploy": "prisma migrate deploy",
-
     "smoke:parcel": "dotenv -e .env.dev -- tsx scripts/parcel-smoke.ts",
     "smoke:restock": "dotenv -e .env.dev -- tsx scripts/restock-smoke.ts",
-
     "purge:prod": "dotenv -e .env.local -- tsx scripts/inventory-purge.ts",
     "purge:dev": "dotenv -e .env.dev -- tsx scripts/inventory-purge.ts",
-
     "skylab:fetch": "dotenv -e .env.local -- tsx scripts/skylab-api.ts fetch",
-    "skylab:reconcile": "dotenv -e .env.local -- tsx scripts/skylab-api.ts reconcile"
+    "skylab:reconcile": "dotenv -e .env.local -- tsx scripts/skylab-api.ts reconcile",
+    "smoke:void": "dotenv -e .env.dev -- tsx scripts/void-smoke.ts"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",

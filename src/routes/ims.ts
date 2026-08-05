@@ -34,6 +34,7 @@ import {
   createInboundDocument,
   createOutboundDocument,
   createPurchaseOrder,
+  deleteDocument,
   emailDocuments,
   quickbooksSyncDocuments,
   recordMemoReturn,
@@ -530,8 +531,10 @@ imsRouter.post(
   })
 );
 
-// Void an Invoice — undo it. Restores parcel carats/pieces and whole-item
-// statuses, keeps the document (marked VOID) so numbering stays gap-free.
+// Void a document — undo it. Outbound docs give their stock back (parcel
+// carats/pieces, whole-item statuses); an inbound receipt deletes the inventory
+// it created. Either way the document is kept, marked VOID, so numbering stays
+// gap-free.
 imsRouter.post(
   "/documents/:id/void",
   wrap(async (req, res) => {
@@ -541,6 +544,21 @@ imsRouter.post(
       return;
     }
     res.json({ document: result.document });
+  })
+);
+
+// Delete a document outright. Refusals are 409 — the request is well formed, the
+// document's current state is what says no — and `error` is a full sentence the
+// admin shows verbatim.
+imsRouter.delete(
+  "/documents/:id",
+  wrap(async (req, res) => {
+    const result = await deleteDocument(req.params.id);
+    if (!result.ok) {
+      res.status(409).json({ error: result.error });
+      return;
+    }
+    res.json({ ok: true, summary: result.summary });
   })
 );
 
