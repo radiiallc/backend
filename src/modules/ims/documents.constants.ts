@@ -26,6 +26,21 @@ export const DOC_PREFIX: Record<DocumentType, string> = {
   RETURN_MEMO_IN: "RET"
 };
 
+// How each type is NAMED to the operator. Refusal messages are shown verbatim
+// in a toast, so the enum token must never reach one — "a BILL_IN cannot be
+// voided" is not a sentence anybody should read.
+export const DOC_LABEL: Record<DocumentType, string> = {
+  MEMO_OUT: "Memo Out",
+  INVOICE: "Invoice",
+  PURCHASE_ORDER: "Purchase Order",
+  BRAND_INVENTORY_IN: "Brand In",
+  BRAND_INVENTORY_OUT: "Brand Out",
+  MEMO_IN: "Memo In",
+  BILL_IN: "Bill In",
+  RETURN_MEMO_OUT: "Return Memo Out",
+  RETURN_MEMO_IN: "Return Memo In"
+};
+
 // Which party a doc addresses (used only as a fallback; the read mapper prefers
 // deriving from whichever FK is actually set). Client-addressed vs vendor-addressed.
 const CLIENT_PARTY_TYPES: readonly DocumentType[] = [

@@ -11,7 +11,9 @@ import type {
 
 import {
   ALLOWED_SOURCE_STATUS,
+  DOC_LABEL,
   DOC_PREFIX,
+  docDirectionOf,
   NEW_ITEM_STATUS,
   NEW_LINE_STATUS,
   type OutboundCreateType
@@ -55,6 +57,10 @@ export type StampDocumentsResult =
   | { ok: false; error: string };
 
 export type VoidDocumentResult = { ok: true; document: ImsDocument } | { ok: false; error: string };
+
+// Delete returns a sentence rather than the document — there is no document left
+// to return, and the summary is what the admin shows in its toast.
+export type DeleteDocumentResult = { ok: true; summary: string } | { ok: false; error: string };
 
 type ItemWithDetails = Prisma.InventoryItemGetPayload<{
   include: { stone: true; jewelry: true; material: true };
@@ -373,8 +379,29 @@ export async function createOutboundDocument(
   return { ok: true, document: prismaDocToDto(created) };
 }
 
-// Void an Invoice — the REVERSE half of the draw/reverse pair, and the undo path
-// the system has never had.
+type VoidableDoc = Prisma.DocumentGetPayload<{
+  include: {
+    lineItems: { include: { inventoryItem: { include: { stone: true } } } };
+    childDocuments: { select: { id: true } };
+  };
+}>;
+
+// Types that have a defined reversal. A return document is itself the record of
+// an undo — reversing it means putting stones BACK on a memo that may since have
+// closed — and the brand-consignment pair has no movement rules written yet, so
+// both refuse by name rather than half-reverse.
+const NOT_VOIDABLE: Partial<Record<PrismaDocumentType, string>> = {
+  RETURN_MEMO_OUT:
+    "A Return Memo Out is the record of stones coming back — it cannot be voided. Correct it by recording the movement again on a new document.",
+  RETURN_MEMO_IN:
+    "A Return Memo In is the record of stones going back to the vendor — it cannot be voided. Correct it by recording the movement again on a new document.",
+  BRAND_INVENTORY_IN: "Brand In documents cannot be voided yet.",
+  BRAND_INVENTORY_OUT: "Brand Out documents cannot be voided yet."
+};
+
+// Void a document — the undo, and the only way to take a mistake back once a
+// document has been saved (Jennifer #0049: "in the case that we make a mistake
+// and need to start over").
 //
 // This matters far more once parcels count down. A whole-item mistake is visible
 // and correctable by hand: the wrong stone shows as SOLD. A parcel mistake is
@@ -382,11 +409,17 @@ export async function createOutboundDocument(
 // of a lot and nothing about the row looks wrong afterwards. Without a reverse,
 // that carat weight is gone.
 //
-// Voiding restores every line: parcels get their carats and pieces back, whole
-// items get the status they held before this document (read from the audit trail
-// this document itself wrote, so the restore is exact rather than an assumption
-// that everything came from IN_STOCK). The document is kept, marked VOID, so the
-// numbering stays gap-free and the mistake stays visible.
+// What "reverse" means depends on which way the goods moved:
+//   outbound (Invoice / Memo Out) — give the stock back: parcels get their
+//     carats and pieces returned, whole items get the status they held before
+//     this document (read from the audit trail this document itself wrote, so
+//     the restore is exact rather than an assumption that everything came from
+//     IN_STOCK). A Purchase Order moved nothing, so voiding it only marks it.
+//   inbound (Bill In / Memo In) — the goods never arrived, so the inventory this
+//     receipt CREATED is deleted outright. See voidInboundDocument.
+//
+// Either way the document itself is kept and marked VOID: numbering stays
+// gap-free and the mistake stays visible instead of vanishing from the record.
 export async function voidDocument(
   documentId: string,
   actorId: string
@@ -394,45 +427,80 @@ export async function voidDocument(
   const doc = await prisma.document.findUnique({
     where: { id: documentId },
     include: {
-      lineItems: { include: { inventoryItem: { include: { stone: true } } } }
+      lineItems: { include: { inventoryItem: { include: { stone: true } } } },
+      childDocuments: { select: { id: true } }
     }
   });
   if (!doc) return { ok: false, error: "Document not found" };
 
-  if (doc.type !== "INVOICE") {
-    return { ok: false, error: `Only an Invoice can be voided (this is a ${doc.type})` };
-  }
+  const label = DOC_LABEL[doc.type];
+  const refusal = NOT_VOIDABLE[doc.type];
+  if (refusal) return { ok: false, error: refusal };
   if (doc.status === "VOID") return { ok: false, error: "Document is already void" };
   if (doc.quickbooksSyncedAt) {
     // Once it has gone to QuickBooks, voiding here would silently desync the two
-    // ledgers. Not a concern during the pilot (invoices are internal-only until
+    // ledgers. Not a concern during the pilot (documents are internal-only until
     // QB is connected) but it must not become one later.
     return {
       ok: false,
-      error: "This invoice has been synced to QuickBooks — void it there first"
+      error: `This ${label} has been synced to QuickBooks — void it there first`
+    };
+  }
+  // A return recorded against this document already moved some of its stones
+  // back. Reversing underneath that would leave the return pointing at a
+  // movement that no longer happened.
+  if (doc.childDocuments.length > 0) {
+    return {
+      ok: false,
+      error: `This ${label} already has a return recorded against it — void the return first`
     };
   }
 
-  // A stone this invoice sold OUT of an open memo had its memo line resolved to
-  // SOLD. Reversing that cleanly means reopening the memo, which is a second
+  if (docDirectionOf(doc.type) === "in") return voidInboundDocument(doc);
+  return voidOutboundDocument(doc, actorId);
+}
+
+// Outbound reversal: Invoice / Memo Out give their stock back; a Purchase Order
+// never took any, so it is only marked.
+async function voidOutboundDocument(
+  doc: VoidableDoc,
+  actorId: string
+): Promise<VoidDocumentResult> {
+  const label = DOC_LABEL[doc.type];
+
+  // A stone this document sold OUT of an open memo had that memo's line resolved
+  // to SOLD. Reversing cleanly means reopening the memo, which is a second
   // lifecycle; refuse rather than leave a memo in a wrong state.
-  const resolvedMemoLines = await prisma.documentLineItem.count({
+  const resolvedElsewhere = await prisma.documentLineItem.count({
     where: { resolvedByDocumentId: doc.id }
   });
-  if (resolvedMemoLines > 0) {
+  if (resolvedElsewhere > 0) {
     return {
       ok: false,
-      error: "This invoice sold stones off an open Memo Out — voiding it is not supported yet"
+      error: `This ${label} sold stones off an open Memo Out — voiding it is not supported yet`
     };
   }
+  // The mirror case: a line on THIS document has already been settled by a
+  // later one (returned, or sold off this memo).
+  if (doc.lineItems.some((l) => l.resolvedByDocumentId !== null)) {
+    return {
+      ok: false,
+      error: `Some items on this ${label} have already been returned or sold — voiding it is not supported yet`
+    };
+  }
+
+  // Only these two draw stock; a PO is an order, not a movement, so its lines
+  // must not be "given back" — that would credit parcels with carats they never
+  // gave up.
+  const drewStock = doc.type === "INVOICE" || doc.type === "MEMO_OUT";
 
   await prisma.$transaction(async (tx) => {
     for (const line of doc.lineItems) {
       const item = line.inventoryItem;
       const stone = item.stone;
-      const isParcelLine = item.itemSubtype === "PARCEL" && stone !== null;
+      const isParcelLine = drewStock && item.itemSubtype === "PARCEL" && stone !== null;
 
-      if (isParcelLine) {
+      if (isParcelLine && stone) {
         // Give the drawn carats/pieces back to the balance.
         const restored = reverseDraw(stone, num(line.caratWeight), line.quantity);
         await tx.stoneDetail.update({
@@ -486,6 +554,215 @@ export async function voidDocument(
     include: IMS_DOC_INCLUDE
   });
   return { ok: true, document: prismaDocToDto(updated) };
+}
+
+// Inbound reversal (Bill In / Memo In): the goods never arrived, so the stock
+// this receipt CREATED is deleted outright rather than moved. There is no status
+// that means "this item was never received" — leaving 174 mistaken stones in
+// inventory as anything at all is the bug being fixed.
+//
+// That makes this the most destructive operation in the IMS, so it only proceeds
+// when every item is provably untouched since it was received: still IN_STOCK,
+// on no other document, unreserved, not offered as a substitute, and — for a
+// parcel — not drawn against. One item failing any of those refuses the whole
+// void by name, because a half-reversed receipt is worse than none.
+//
+// Restock lines are refused outright. A receipt that topped up an existing SKU
+// re-averaged that lot's cost; the pre-merge cost is not recorded anywhere, so
+// "subtract the carats back" would leave a lot valued at a price nobody paid.
+// No actor is threaded in: unlike an outbound void, this one writes no audit row
+// to attribute — every history row it touches dies with the item it described.
+async function voidInboundDocument(doc: VoidableDoc): Promise<VoidDocumentResult> {
+  const label = DOC_LABEL[doc.type];
+
+  // Which items this receipt brought into existence. The origin row an inbound
+  // create writes (previousStatus null → IN_STOCK, documentId = this doc) is the
+  // authoritative marker — a restocked line has no origin row of its own here,
+  // because the item was already in stock before this document existed.
+  const originRows = await prisma.itemStatusHistory.findMany({
+    where: { documentId: doc.id, previousStatus: null },
+    select: { inventoryItemId: true }
+  });
+  const createdIds = originRows.map((r) => r.inventoryItemId);
+  const createdSet = new Set(createdIds);
+
+  const restockLines = doc.lineItems.filter((l) => !createdSet.has(l.inventoryItemId));
+  if (restockLines.length > 0) {
+    const skus = restockLines.slice(0, 3).map((l) => l.inventoryItem.sku);
+    const more = restockLines.length > skus.length ? ` and ${restockLines.length - skus.length} more` : "";
+    return {
+      ok: false,
+      error: `This ${label} topped up stock that was already on the shelf (${skus.join(", ")}${more}), which re-averaged those lots' cost. That cannot be undone automatically — adjust those lots by hand instead.`
+    };
+  }
+
+  const items = await prisma.inventoryItem.findMany({
+    where: { id: { in: createdIds } },
+    include: {
+      stone: { select: { weightCt: true, quantity: true, remainingCt: true, remainingQty: true } },
+      _count: { select: { substituteRequestItems: true } }
+    }
+  });
+
+  // Every LIVE document other than this one that names one of these items. A
+  // voided document is excluded on purpose: it holds nothing, and counting it
+  // would make a receipt permanently un-voidable after any outbound doc against
+  // it had been voided — the exact "we made a mistake, start over" sequence.
+  const claimedElsewhere = new Set(
+    (
+      await prisma.documentLineItem.findMany({
+        where: {
+          inventoryItemId: { in: createdIds },
+          documentId: { not: doc.id },
+          document: { status: { not: "VOID" } }
+        },
+        select: { inventoryItemId: true }
+      })
+    ).map((l) => l.inventoryItemId)
+  );
+
+  for (const item of items) {
+    // Anything but IN_STOCK means a later document already moved it, so undoing
+    // the receipt would delete stock that is currently out on memo or sold.
+    if (item.status !== "IN_STOCK") {
+      return {
+        ok: false,
+        error: `${item.sku} has already moved (${item.status.toLowerCase().replace("_", " ")}) since this ${label} was received, so it can no longer be voided. Reverse that movement first.`
+      };
+    }
+    if (claimedElsewhere.has(item.id)) {
+      return {
+        ok: false,
+        error: `${item.sku} appears on another document as well, so this ${label} can no longer be voided. Void that document first.`
+      };
+    }
+    if (item.reservedForClientId) {
+      return {
+        ok: false,
+        error: `${item.sku} is reserved for a client, so this ${label} can no longer be voided. Release the reservation first.`
+      };
+    }
+    if (item._count.substituteRequestItems > 0) {
+      return {
+        ok: false,
+        error: `${item.sku} has been offered to a client as a substitute on a request, so this ${label} can no longer be voided. Remove it from that request first.`
+      };
+    }
+    // A parcel can be drawn down without ever changing status — the silent case
+    // the status check above cannot see.
+    const stone = item.stone;
+    if (stone) {
+      const drawnCt = stone.remainingCt !== null && num(stone.remainingCt) !== num(stone.weightCt);
+      const drawnQty =
+        stone.remainingQty !== null && stone.quantity !== null && stone.remainingQty !== stone.quantity;
+      if (drawnCt || drawnQty) {
+        return {
+          ok: false,
+          error: `${item.sku} has already been drawn against, so this ${label} can no longer be voided. Void the document that drew from it first.`
+        };
+      }
+    }
+  }
+
+  const count = items.length;
+  await prisma.$transaction(
+    async (tx) => {
+      // Lines first: DocumentLineItem.inventoryItemId has no cascade, so the
+      // items cannot go while their lines still point at them. That includes
+      // lines on OTHER documents — which, by the guard above, can only ever be
+      // voided ones. A void doc's line describes a movement that was undone, so
+      // it survives no better than the item it names.
+      await tx.documentLineItem.deleteMany({
+        where: { OR: [{ documentId: doc.id }, { inventoryItemId: { in: createdIds } }] }
+      });
+      // Deleting the items takes their detail rows and status history with them
+      // (both cascade), including the origin rows that referenced this document.
+      await tx.inventoryItem.deleteMany({ where: { id: { in: createdIds } } });
+      await tx.document.update({
+        where: { id: doc.id },
+        data: {
+          status: "VOID",
+          closeReason: null,
+          // The line items are gone with the stock, so without this the voided
+          // document is a blank shell that no longer says what it undid.
+          notes: [doc.notes, `Voided — ${count} received item(s) removed from inventory.`]
+            .filter(Boolean)
+            .join("\n")
+        }
+      });
+    },
+    { timeout: 30_000 }
+  );
+
+  const updated = await prisma.document.findUniqueOrThrow({
+    where: { id: doc.id },
+    include: IMS_DOC_INCLUDE
+  });
+  return { ok: true, document: prismaDocToDto(updated) };
+}
+
+// Delete a document outright — the harder half of Jennifer #0049. Void is the
+// undo; this is for the document that should not exist at all (a duplicate, a
+// test upload), where leaving a VOID shell in the list is itself the clutter.
+//
+// It deliberately cannot delete anything that moved stock: void it first, which
+// reverses the movement, and only then can it be deleted. That ordering is what
+// keeps "delete" from being a way to make inventory changes untraceable.
+export async function deleteDocument(documentId: string): Promise<DeleteDocumentResult> {
+  const doc = await prisma.document.findUnique({
+    where: { id: documentId },
+    include: {
+      _count: { select: { lineItems: true, childDocuments: true, resolvedLineItems: true } },
+      sourceRequest: { select: { id: true } }
+    }
+  });
+  if (!doc) return { ok: false, error: "Document not found" };
+
+  const label = DOC_LABEL[doc.type];
+  const name = doc.documentNumber || doc.externalReference || `this ${label}`;
+
+  if (doc._count.childDocuments > 0) {
+    return {
+      ok: false,
+      error: `${name} has a return recorded against it — delete the return first`
+    };
+  }
+  if (doc._count.resolvedLineItems > 0) {
+    return {
+      ok: false,
+      error: `${name} settled lines on another document — deleting it would leave that document claiming a settlement that no longer exists`
+    };
+  }
+  // Request.convertedDocumentId is the link a client sees as "your request became
+  // this document". Deleting underneath it strands the request.
+  if (doc.sourceRequest) {
+    return {
+      ok: false,
+      error: `${name} was created from a client request — void it instead, so the request still points at something`
+    };
+  }
+  // The whole guard, in one line: a document may only be deleted once it is not
+  // holding any stock in place. VOID means it was reversed; no lines means it
+  // never held any; a Purchase Order is an order, not a movement.
+  const movedNothing = doc.status === "VOID" || doc._count.lineItems === 0 || doc.type === "PURCHASE_ORDER";
+  if (!movedNothing) {
+    return {
+      ok: false,
+      error: `${name} is holding stock — void it first (that puts the items back), then delete it`
+    };
+  }
+
+  await prisma.$transaction(async (tx) => {
+    // Both FKs to Document are restrict-on-delete, so the references have to go
+    // first. Dropping the audit rows is a real loss of trail — it is the point
+    // of a delete, and the reason void is the recommended path everywhere in the
+    // UI. They are only ever rows about a document that will not exist.
+    await tx.itemStatusHistory.deleteMany({ where: { documentId: doc.id } });
+    await tx.documentLineItem.deleteMany({ where: { documentId: doc.id } });
+    await tx.document.delete({ where: { id: doc.id } });
+  });
+
+  return { ok: true, summary: `${name} deleted` };
 }
 
 // Create a Purchase Order — a vendor-addressed outbound doc committing RADIIA to
