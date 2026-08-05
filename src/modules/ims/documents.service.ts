@@ -156,6 +156,29 @@ function costSnapshot(item: ItemWithDetails): {
   return { quantity: null, caratWeight: null, unitPrice: null, totalPrice: null };
 }
 
+// Same math as costSnapshot, but for a detail row that hasn't been written yet
+// (the batched bulk-create path knows these numbers locally — see
+// createInboundDocument — and doesn't need a round-trip to re-read what it
+// just built).
+function detailCostSnapshot(
+  kind: "stone" | "jewelry" | "material",
+  detail: Record<string, unknown>
+): { quantity: number | null; caratWeight: number | null; unitPrice: number | null; totalPrice: number | null } {
+  const n = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  if (kind === "stone") {
+    const carat = n(detail.weightCt);
+    const cpc = n(detail.costPerCt);
+    const total = carat !== null && cpc !== null ? Math.round(carat * cpc * 100) / 100 : n(detail.totalCost);
+    return { quantity: n(detail.quantity), caratWeight: carat, unitPrice: cpc, totalPrice: total };
+  }
+  if (kind === "jewelry") {
+    const cost = n(detail.productionCost);
+    return { quantity: n(detail.quantity), caratWeight: null, unitPrice: cost, totalPrice: cost };
+  }
+  const cost = n(detail.cost);
+  return { quantity: n(detail.quantity), caratWeight: null, unitPrice: cost, totalPrice: cost };
+}
+
 // Recompute a Memo Out's disposition from the CURRENT state of all its lines —
 // call inside a tx AFTER those lines have been updated. A memo closes only once
 // no line is still ON_MEMO; closeReason derives from the resolved mix (all
@@ -933,9 +956,28 @@ export async function createInboundDocument(
           let mi = 0;
           const skus = providedSkus.map((s, i) => (restockPlans.has(i) ? s! : (s ?? minted[mi++])));
 
-          const lines: Array<{ inventoryItemId: string } & ReturnType<typeof costSnapshot>> = [];
+          const lines: Array<({ inventoryItemId: string } & ReturnType<typeof costSnapshot>) | null> =
+            new Array(input.items.length).fill(null);
           const createdItemIds: string[] = [];
           const restoredItemIds: Array<{ id: string; from: string }> = [];
+
+          // A bulk migration (case A, hundreds of rows) can't afford one
+          // create + one history insert per item — that's 300+ serialized
+          // round-trips inside a single tx and risks the transaction timeout.
+          // Every plain-create item is instead assembled locally, then written
+          // in a handful of createMany batches: the InventoryItem rows first
+          // (so the DB mints their ids), then the matching detail rows keyed
+          // off the sku (unique per item within this upload — the dupe guard
+          // above already proved that).
+          type Pending = {
+            index: number;
+            sku: string;
+            core: ReturnType<typeof buildInboundItemCreateData>;
+            detailKind: "stone" | "jewelry" | "material";
+            detail: Record<string, unknown>;
+          };
+          const pending: Pending[] = [];
+
           for (let i = 0; i < input.items.length; i++) {
             const plan = restockPlans.get(i);
 
@@ -967,23 +1009,49 @@ export async function createInboundDocument(
                 });
                 restoredItemIds.push({ id: plan.itemId, from: "SOLD" });
               }
-              lines.push({
+              lines[i] = {
                 inventoryItemId: plan.itemId,
                 quantity: plan.receivedQty,
                 caratWeight: plan.receivedCt,
                 unitPrice: plan.unitCost,
                 totalPrice: plan.totalCost
-              });
+              };
               continue;
             }
 
-            const data = buildInboundItemCreateData(input.items[i], input.vendorId, skus[i]);
-            const item = await tx.inventoryItem.create({
-              data,
-              include: { stone: true, jewelry: true, material: true }
+            const data = buildInboundItemCreateData(input.items[i], input.vendorId, skus[i]) as Record<
+              string,
+              unknown
+            >;
+            const { stone, jewelry, material, ...core } = data;
+            const detailKind = stone ? "stone" : jewelry ? "jewelry" : "material";
+            const detail = ((stone ?? jewelry ?? material) as { create: Record<string, unknown> }).create;
+            pending.push({ index: i, sku: skus[i], core: core as any, detailKind, detail });
+          }
+
+          if (pending.length) {
+            const createdCore = await tx.inventoryItem.createManyAndReturn({
+              data: pending.map((p) => p.core),
+              select: { id: true, sku: true }
             });
-            createdItemIds.push(item.id);
-            lines.push({ inventoryItemId: item.id, ...costSnapshot(item) });
+            const idBySku = new Map(createdCore.map((r) => [r.sku, r.id]));
+
+            const stoneRows: Array<Record<string, unknown>> = [];
+            const jewelryRows: Array<Record<string, unknown>> = [];
+            const materialRows: Array<Record<string, unknown>> = [];
+            for (const p of pending) {
+              const id = idBySku.get(p.sku);
+              if (!id) throw new Error(`Bulk insert did not return an id for sku ${p.sku}`);
+              if (p.detailKind === "stone") stoneRows.push({ inventoryItemId: id, ...p.detail });
+              else if (p.detailKind === "jewelry") jewelryRows.push({ inventoryItemId: id, ...p.detail });
+              else materialRows.push({ inventoryItemId: id, ...p.detail });
+
+              createdItemIds.push(id);
+              lines[p.index] = { inventoryItemId: id, ...detailCostSnapshot(p.detailKind, p.detail) };
+            }
+            if (stoneRows.length) await tx.stoneDetail.createMany({ data: stoneRows as any });
+            if (jewelryRows.length) await tx.jewelryDetail.createMany({ data: jewelryRows as any });
+            if (materialRows.length) await tx.otherMaterialDetail.createMany({ data: materialRows as any });
           }
 
           const doc = await tx.document.create({
@@ -998,43 +1066,45 @@ export async function createInboundDocument(
               notes: input.notes ?? null,
               createdById,
               lineItems: {
-                create: lines.map((l) => ({
-                  inventoryItemId: l.inventoryItemId,
-                  lineStatus: "IN_STOCK" as const,
-                  quantity: l.quantity,
-                  caratWeight: l.caratWeight,
-                  unitPrice: l.unitPrice,
-                  totalPrice: l.totalPrice
-                }))
+                create: (lines as Array<{ inventoryItemId: string } & ReturnType<typeof costSnapshot>>).map(
+                  (l) => ({
+                    inventoryItemId: l.inventoryItemId,
+                    lineStatus: "IN_STOCK" as const,
+                    quantity: l.quantity,
+                    caratWeight: l.caratWeight,
+                    unitPrice: l.unitPrice,
+                    totalPrice: l.totalPrice
+                  })
+                )
               }
             }
           });
 
           // Provenance: each item was brought into stock THROUGH this document.
-          for (const inventoryItemId of createdItemIds) {
-            await tx.itemStatusHistory.create({
-              data: {
+          if (createdItemIds.length) {
+            await tx.itemStatusHistory.createMany({
+              data: createdItemIds.map((inventoryItemId) => ({
                 inventoryItemId,
                 previousStatus: null,
-                newStatus: "IN_STOCK",
+                newStatus: "IN_STOCK" as const,
                 documentId: doc.id,
                 changedById: createdById
-              }
+              }))
             });
           }
 
           // A restock only earns an audit row when it actually moved the status
           // (a sold-out lot coming back). Topping up a lot that was already in
           // stock changes no status, and the document line is the record of it.
-          for (const { id, from } of restoredItemIds) {
-            await tx.itemStatusHistory.create({
-              data: {
+          if (restoredItemIds.length) {
+            await tx.itemStatusHistory.createMany({
+              data: restoredItemIds.map(({ id, from }) => ({
                 inventoryItemId: id,
                 previousStatus: from as ItemWithDetails["status"],
-                newStatus: "IN_STOCK",
+                newStatus: "IN_STOCK" as const,
                 documentId: doc.id,
                 changedById: createdById
-              }
+              }))
             });
           }
 
