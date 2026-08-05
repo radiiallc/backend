@@ -192,6 +192,10 @@ function buildRawItem(category: ImsCsvCategory, get: RowGet): Record<string, unk
       videoUrl: str(get(["video"]))
     };
     if (category === "diamonds") {
+      // "Diamond" is the literal the Inventory list's Diamonds-tab filter checks
+      // (admin/src/lib/item.ts) — every other diamond-creation path sets it; this
+      // one has to too, or the row silently lands on the Gemstones tab instead.
+      stone.gemType = "Diamond";
       stone.naturalOrLab = toNaturalOrLab(get(["stonetype", "type", "naturalorlab"]));
     } else {
       stone.gemType = str(get(["stonetype", "type", "gemtype", "variety"]));
