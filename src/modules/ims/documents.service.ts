@@ -76,6 +76,7 @@ type LineSnapshot = {
   caratWeight: number | null;
   unitPrice: number | null;
   totalPrice: number | null;
+  clientReference: string | null;
 };
 
 function num(value: Prisma.Decimal | null): number | null {
@@ -281,6 +282,7 @@ export async function createOutboundDocument(
       itemId: item.id,
       currentStatus: item.status,
       draw: resolved.draw,
+      clientReference: line.clientReference?.trim() || null,
       ...priceSnapshot(item, resolved.draw)
     });
   }
@@ -322,7 +324,8 @@ export async function createOutboundDocument(
             quantity: s.quantity,
             caratWeight: s.caratWeight,
             unitPrice: s.unitPrice,
-            totalPrice: s.totalPrice
+            totalPrice: s.totalPrice,
+            clientReference: s.clientReference
           }))
         }
       }

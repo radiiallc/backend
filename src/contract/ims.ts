@@ -512,7 +512,11 @@ export type ImsAdjustParcelRemaining = z.infer<typeof ImsAdjustParcelRemainingSc
 export const ImsDocumentLineDrawSchema = z.object({
   inventoryItemId: z.string().min(1),
   caratWeight: z.number().positive().optional(),
-  quantity: z.number().int().positive().optional()
+  quantity: z.number().int().positive().optional(),
+  // Who this specific line is for — scoped to THIS document/line, not the item,
+  // so re-selling a stone that was once memoed to a different client can never
+  // show the old name (Morgan, 2026-08-11).
+  clientReference: z.string().trim().max(200).optional()
 });
 export type ImsDocumentLineDraw = z.infer<typeof ImsDocumentLineDrawSchema>;
 
