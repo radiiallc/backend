@@ -1,7 +1,11 @@
 // Parcel draw-down smoke — exercises the whole draw/reverse cycle against
 // radiia_dev at the service layer. Run: npm run smoke:parcel
 import { prisma } from "@/db";
-import { createOutboundDocument, voidDocument } from "@/modules/ims/documents.service";
+import {
+  createOutboundDocument,
+  recordMemoReturn,
+  voidDocument
+} from "@/modules/ims/documents.service";
 import {
   adjustParcelRemaining,
   createInventoryItem,
@@ -132,12 +136,6 @@ async function main(): Promise<void> {
     partialSingle.ok ? "accepted!" : partialSingle.error
   );
 
-  const memo = await createOutboundDocument(
-    { type: "MEMO_OUT", clientId: client.id, lines: [{ inventoryItemId: p }] } as never,
-    user.id
-  );
-  check("parcel on a MEMO_OUT rejected (invoice-only pilot)", !memo.ok, memo.ok ? "accepted!" : memo.error);
-
   const dupe = await inv([
     { inventoryItemId: p, caratWeight: 0.1 },
     { inventoryItemId: p, caratWeight: 0.2 }
@@ -243,6 +241,99 @@ async function main(): Promise<void> {
   b = await balance(drawn);
   check("part-drawn parcel: weight edit does NOT reset the balance", b.ct === 15, b);
 
+  // ── 9. the memo lifecycle (parcels on a Memo Out) ─────────────────────────
+  // The whole point is that carats are conserved: a memo takes them, a return
+  // gives them back, and the invoice that settles a memo must NOT take them a
+  // second time. Each step below re-reads the balance rather than trusting the
+  // return value, because the bug worth catching here is a double write.
+  console.log("\n[9] memo lifecycle");
+  const memoOut = (lines: unknown[], clientId = client.id) =>
+    createOutboundDocument({ type: "MEMO_OUT", clientId, lines } as never, user.id);
+
+  const mp = await mkParcel(20, 100, 400);
+  const m1 = await memoOut([{ inventoryItemId: mp, caratWeight: 5, quantity: 25 }]);
+  check("a parcel can now go out on a Memo Out", m1.ok, m1.ok ? undefined : m1.error);
+  b = await balance(mp);
+  check("memo draws the slice: 20 - 5 = 15 ct", b.ct === 15, b);
+  check("memo draws the pieces: 100 - 25 = 75", b.qty === 75, b);
+  check("part-memo'd lot STAYS IN_STOCK", b.status === "IN_STOCK", b);
+  if (m1.ok) {
+    check("memo line prices the slice (5 x 400 = 2000)", m1.document.lineItems[0]?.totalPrice === 2000, m1.document.lineItems[0]);
+  }
+
+  // Returning it gives exactly that slice back.
+  if (m1.ok) {
+    const ret = await recordMemoReturn(m1.document.id, {} as never, user.id);
+    check("memo return succeeds", ret.ok, ret.ok ? undefined : ret.error);
+    b = await balance(mp);
+    check("return restores the carats: back to 20", b.ct === 20, b);
+    check("return restores the pieces: back to 100", b.qty === 100, b);
+    check("lot is still IN_STOCK (it never left)", b.status === "IN_STOCK", b);
+    const noise = await prisma.itemStatusHistory.count({
+      where: { inventoryItemId: mp, previousStatus: "IN_STOCK", newStatus: "IN_STOCK" }
+    });
+    check("no IN_STOCK -> IN_STOCK noise in the audit trail", noise === 0, noise);
+  }
+
+  // Memo again, then SELL the slice: the invoice must settle, not re-draw.
+  const m2 = await memoOut([{ inventoryItemId: mp, caratWeight: 6 }]);
+  check("second memo draws again", m2.ok, m2.ok ? undefined : m2.error);
+  b = await balance(mp);
+  check("balance after memoing 6 of 20 = 14", b.ct === 14, b);
+
+  const settle = await inv([{ inventoryItemId: mp, caratWeight: 6 }]);
+  check("invoicing the memo'd slice succeeds", settle.ok, settle.ok ? undefined : settle.error);
+  b = await balance(mp);
+  check("SETTLE does not draw twice — balance still 14", b.ct === 14, b);
+  if (settle.ok) {
+    check("settled line still prices the slice (6 x 400)", settle.document.lineItems[0]?.totalPrice === 2400, settle.document.lineItems[0]);
+  }
+  if (m2.ok) {
+    const memoDoc = await prisma.document.findUniqueOrThrow({
+      where: { id: m2.document.id },
+      include: { lineItems: true }
+    });
+    check("the memo line is resolved to SOLD", memoDoc.lineItems[0]?.lineStatus === "SOLD", memoDoc.lineItems[0]?.lineStatus);
+    check("the memo auto-closes once nothing is out", memoDoc.status === "CLOSED", memoDoc.status);
+  }
+
+  // A client holding a slice buying MORE must draw fresh, not be refused.
+  const m3 = await memoOut([{ inventoryItemId: mp, caratWeight: 3 }]);
+  check("third memo (3 ct of the 14 left)", m3.ok, m3.ok ? undefined : m3.error);
+  const extra = await inv([{ inventoryItemId: mp, caratWeight: 2 }]);
+  check("same client buying a DIFFERENT weight draws fresh", extra.ok, extra.ok ? undefined : extra.error);
+  b = await balance(mp);
+  check("fresh draw moved the balance: 11 - 2 = 9", b.ct === 9, b);
+  if (m3.ok) {
+    const still = await prisma.document.findUniqueOrThrow({
+      where: { id: m3.document.id },
+      include: { lineItems: true }
+    });
+    check("the 3 ct memo is untouched by that sale", still.lineItems[0]?.lineStatus === "ON_MEMO", still.lineItems[0]?.lineStatus);
+    check("and stays OPEN", still.status === "OPEN", still.status);
+  }
+
+  // Another client's slice of the SAME lot must not be swept up.
+  const client2 =
+    (await prisma.company.findFirst({ where: { name: "SMOKE Parcel Client 2" } })) ??
+    (await prisma.company.create({ data: { name: "SMOKE Parcel Client 2" } }));
+  const m4 = await memoOut([{ inventoryItemId: mp, caratWeight: 4 }], client2.id);
+  check("a second client can memo the same lot", m4.ok, m4.ok ? undefined : m4.error);
+  // Client 1 settles their 3 ct; client 2's 4 ct must be left alone.
+  const settle1 = await inv([{ inventoryItemId: mp, caratWeight: 3 }]);
+  check("client 1 settles their own slice", settle1.ok, settle1.ok ? undefined : settle1.error);
+  if (m4.ok) {
+    const other = await prisma.document.findUniqueOrThrow({
+      where: { id: m4.document.id },
+      include: { lineItems: true }
+    });
+    check("client 2's memo line is NOT resolved", other.lineItems[0]?.lineStatus === "ON_MEMO", other.lineItems[0]?.lineStatus);
+    check("client 2's memo stays OPEN", other.status === "OPEN", other.status);
+  }
+  b = await balance(mp);
+  check("settling client 1 moved no stock (still 5 ct)", b.ct === 5, b);
+  check("lot is IN_STOCK while client 2 still holds a slice", b.status === "IN_STOCK", b);
+
   // ── cleanup ───────────────────────────────────────────────────────────────
   // Leave radiia_dev as we found it, so the smoke is repeatable and does not
   // slowly fill the dev DB with fixtures.
@@ -251,15 +342,16 @@ async function main(): Promise<void> {
     select: { id: true }
   });
   const mineIds = mine.map((i) => i.id);
+  const clientIds = [client.id, client2.id];
   const docIds = (
-    await prisma.document.findMany({ where: { clientId: client.id }, select: { id: true } })
+    await prisma.document.findMany({ where: { clientId: { in: clientIds } }, select: { id: true } })
   ).map((d) => d.id);
 
   await prisma.documentLineItem.deleteMany({ where: { documentId: { in: docIds } } });
   await prisma.itemStatusHistory.deleteMany({ where: { inventoryItemId: { in: mineIds } } });
   await prisma.document.deleteMany({ where: { id: { in: docIds } } });
   await prisma.inventoryItem.deleteMany({ where: { id: { in: mineIds } } });
-  await prisma.company.delete({ where: { id: client.id } }).catch(() => undefined);
+  await prisma.company.deleteMany({ where: { id: { in: clientIds } } }).catch(() => undefined);
   await prisma.vendor.delete({ where: { id: vendor.id } }).catch(() => undefined);
   console.log(`\ncleaned up ${mineIds.length} item(s), ${docIds.length} doc(s)`);
 
