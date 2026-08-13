@@ -20,10 +20,15 @@ import { Prisma } from "@/db";
 //      before. On a parcel "the whole item" is all REMAINING carats (not the
 //      original weight — otherwise a part-drawn parcel would bill for stock that
 //      is already gone).
-//   2. Parcels are INVOICE-only for the pilot. Partial memo is designed for but
-//      not built (Jennifer deferred it), and a half-built memo path would put
-//      wrong numbers in the ledger; rejecting is the honest failure.
-//   3. Over-draw, zero and negative are rejected before anything is written.
+//   2. A parcel may go out on a Memo Out as well as an Invoice. The memo DRAWS
+//      the slice (the carats are physically gone from the safe), a memo return
+//      REVERSES it, and an invoice against that memo SETTLES it — see
+//      resolveSettle — rather than drawing a second time.
+//   3. A memo'd slice is atomic: "they either return the whole memo, or buy the
+//      whole memo" (Jennifer 2026-07-28). Buying or returning part of a slice is
+//      refused rather than split, because splitting means a memo line that is
+//      half SOLD and half RETURNED — a second lifecycle, not a caller change.
+//   4. Over-draw, zero and negative are rejected before anything is written.
 
 // Decimal(10,3) in the DB, so 3dp is the atom. Round every computed balance to
 // it — otherwise float drift leaves a parcel at 1e-16 ct and it never closes.
@@ -90,11 +95,7 @@ export type ResolveResult = { ok: true; draw: ResolvedDraw } | { ok: false; erro
 // Validate one requested line against live stock and compute the resulting
 // balance. Pure — no DB writes, so the caller can validate every line before
 // opening a transaction and reject the whole document atomically.
-export function resolveDraw(
-  item: ParcelItem,
-  requested: DrawRequest,
-  docType: "MEMO_OUT" | "INVOICE"
-): ResolveResult {
+export function resolveDraw(item: ParcelItem, requested: DrawRequest): ResolveResult {
   const wantsPartial = requested.caratWeight != null || requested.quantity != null;
   const parcel = isParcel(item);
 
@@ -105,18 +106,11 @@ export function resolveDraw(
     };
   }
 
-  // Parcels are invoice-only for the pilot. A parcel on a Memo Out needs the
-  // memo to own a carat slice that is atomically returned or bought ("they
-  // either return the whole memo, or buy the whole memo" — Jennifer 2026-07-28),
-  // which means the return and invoice-from-memo paths both have to reverse and
-  // re-draw a balance. That is deliberately not built yet, and guessing at it
-  // would put wrong numbers in the ledger. Refusing is the honest failure.
-  if (parcel && docType !== "INVOICE") {
-    return {
-      ok: false,
-      error: `${item.sku} is a parcel — parcels can only go on an Invoice for now (partial Memo Out is not built yet)`
-    };
-  }
+  // There is deliberately no document-type gate here any more: a Memo Out draws
+  // exactly like an Invoice does. What differs is only what can happen NEXT — a
+  // memo'd slice can come back (reverseDraw) or be bought (resolveSettle), where
+  // an invoiced one cannot. Both are the caller's job, which is the whole point
+  // of keeping one reversible primitive in here.
 
   // Non-parcel: keep the pre-existing atomic behaviour, untouched.
   if (!parcel) {
@@ -213,6 +207,62 @@ export function resolveDraw(
       remainingAfterQty: emptied && remainingAfterQty !== null ? 0 : remainingAfterQty,
       isPartial: true,
       emptied
+    }
+  };
+}
+
+// The SETTLE case: an Invoice for a parcel slice that is already out on this
+// client's Memo Out. Those carats left the balance when the memo was written, so
+// drawing again would take them twice — the invoice records the sale and prices
+// the slice, but must not move stock.
+export type MemoDraw = { caratWeight: number | null; quantity: number | null };
+
+// Does this invoice line mean "buy the slice you're already holding", or "sell
+// me some more out of the same lot"? Both are legitimate and they must not be
+// confused: settling moves no stock, a fresh draw does.
+//
+// Asking for nothing in particular settles. That is the safer default of the
+// two — reading it as a fresh draw of everything remaining would invoice carats
+// that are still sitting at the client while ALSO zeroing the balance, so the
+// memo'd slice would be sold twice over.
+export function matchesMemoSlice(memo: MemoDraw, requested: DrawRequest): boolean {
+  if (requested.caratWeight == null) return true;
+  if (memo.caratWeight === null) return false;
+  return Math.abs(round3(requested.caratWeight) - round3(memo.caratWeight)) <= EPS;
+}
+
+export function resolveSettle(item: ParcelItem, memo: MemoDraw, requested: DrawRequest): ResolveResult {
+  const stock = remainingOf(item.stone!);
+  const memoCt = memo.caratWeight === null ? null : round3(memo.caratWeight);
+
+  // Carats matched but the piece count didn't. Rule 3: the slice is atomic, so
+  // this is a contradiction to surface rather than a split to invent.
+  if (
+    requested.quantity != null &&
+    memo.quantity !== null &&
+    Math.round(requested.quantity) !== memo.quantity
+  ) {
+    return {
+      ok: false,
+      error: `${item.sku}: ${memoCt} ct out on memo to this client is ${memo.quantity} piece(s), not ${Math.round(requested.quantity)} — invoice the whole memo'd slice, or record a return first`
+    };
+  }
+
+  return {
+    ok: true,
+    draw: {
+      drawCt: memoCt,
+      drawQty: memo.quantity,
+      // null = leave the balance columns alone. The memo already decremented
+      // them; writing here would bill the parcel twice for one movement.
+      remainingAfterCt: null,
+      remainingAfterQty: null,
+      // Carats still in the lot mean the parcel itself never left stock — only
+      // this client's slice is being sold, so the item keeps its status. When
+      // the lot is empty the item is ON_MEMO and this invoice is what turns it
+      // SOLD (the caller still checks no OTHER memo holds a slice).
+      isPartial: stock.ct > EPS,
+      emptied: stock.ct <= EPS
     }
   };
 }

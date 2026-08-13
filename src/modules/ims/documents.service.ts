@@ -20,7 +20,7 @@ import {
 } from "./documents.constants";
 import { IMS_DOC_INCLUDE, prismaDocToDto } from "./documents.mappers";
 import { buildInboundItemCreateData, mintSkuBatch } from "./inventory.service";
-import { type ResolvedDraw, resolveDraw, reverseDraw } from "./parcel";
+import { matchesMemoSlice, type ResolvedDraw, resolveDraw, resolveSettle, reverseDraw } from "./parcel";
 import {
   type ExistingItem,
   type RestockPlan,
@@ -77,6 +77,11 @@ type LineSnapshot = {
   unitPrice: number | null;
   totalPrice: number | null;
   clientReference: string | null;
+  // Set when this INVOICE line buys a parcel slice already out on the client's
+  // Memo Out. Carries the memo line's id because that specific line is what gets
+  // resolved to SOLD — a parcel can be out to several clients at once, so
+  // "the memo line for this item" is not unique enough to look up later.
+  settlesMemoLineId: string | null;
 };
 
 function num(value: Prisma.Decimal | null): number | null {
@@ -269,6 +274,44 @@ export async function createOutboundDocument(
     };
   }
 
+  // An INVOICE for a parcel slice this client already holds on memo SETTLES that
+  // memo rather than drawing again — the carats left the safe when the memo was
+  // written. Scoped to the invoice's own client on purpose: two clients can each
+  // hold a slice of the same parcel, and settling the wrong one would close a
+  // memo whose stones are still out.
+  //
+  // Only parcels take this route. A single stone out on memo is already handled
+  // by the ON_MEMO -> SOLD status flip below, and has no balance to double-draw.
+  const memoLineByItem = new Map<string, { id: string; caratWeight: number | null; quantity: number | null }>();
+  if (type === "INVOICE") {
+    const openMemoLines = await prisma.documentLineItem.findMany({
+      where: {
+        inventoryItemId: { in: ids },
+        lineStatus: "ON_MEMO",
+        document: { type: "MEMO_OUT", clientId: input.clientId }
+      },
+      select: { id: true, inventoryItemId: true, caratWeight: true, quantity: true }
+    });
+    for (const ml of openMemoLines) {
+      const item = items.find((i) => i.id === ml.inventoryItemId);
+      if (!item || item.itemSubtype !== "PARCEL") continue;
+      if (memoLineByItem.has(ml.inventoryItemId)) {
+        // Two open memos to one client holding slices of one parcel. Which slice
+        // is being bought is genuinely ambiguous, and picking one would silently
+        // leave the other's carats unaccounted for.
+        return {
+          ok: false,
+          error: `${item.sku} is out on more than one open memo to this client — record a return on one of them before invoicing`
+        };
+      }
+      memoLineByItem.set(ml.inventoryItemId, {
+        id: ml.id,
+        caratWeight: num(ml.caratWeight),
+        quantity: ml.quantity
+      });
+    }
+  }
+
   // Resolve every parcel draw against live stock BEFORE opening the transaction,
   // so an over-draw on line 7 rejects the whole document instead of half-writing
   // it.
@@ -276,13 +319,20 @@ export async function createOutboundDocument(
   const snapshots: LineSnapshot[] = [];
   for (const line of lines) {
     const item = byId.get(line.inventoryItemId)!;
-    const resolved = resolveDraw(item, line, type);
+    // Settle the client's existing slice, or draw fresh carats out of what is
+    // left of the lot — the requested weight is what tells the two apart. A
+    // client who already holds 4 ct and now buys 2 more gets a real draw, not a
+    // refusal.
+    const memoLine = memoLineByItem.get(item.id);
+    const settles = memoLine != null && matchesMemoSlice(memoLine, line);
+    const resolved = settles ? resolveSettle(item, memoLine!, line) : resolveDraw(item, line);
     if (!resolved.ok) return { ok: false, error: resolved.error };
     snapshots.push({
       itemId: item.id,
       currentStatus: item.status,
       draw: resolved.draw,
       clientReference: line.clientReference?.trim() || null,
+      settlesMemoLineId: settles ? memoLine!.id : null,
       ...priceSnapshot(item, resolved.draw)
     });
   }
@@ -351,6 +401,21 @@ export async function createOutboundDocument(
       // (the document line itself is the record of the movement).
       if (draw.isPartial && !draw.emptied) continue;
 
+      // Settling an emptied parcel only sells it outright if nobody ELSE still
+      // holds a slice. Two clients can share a depleted lot; marking it SOLD
+      // while the other slice is out would strand stones that still have to come
+      // back or be invoiced.
+      if (s.settlesMemoLineId) {
+        const stillOutElsewhere = await tx.documentLineItem.count({
+          where: {
+            inventoryItemId: s.itemId,
+            lineStatus: "ON_MEMO",
+            id: { not: s.settlesMemoLineId }
+          }
+        });
+        if (stillOutElsewhere > 0) continue;
+      }
+
       await tx.inventoryItem.update({
         where: { id: s.itemId },
         data: { status: newItemStatus, visibleOnPortal: false }
@@ -372,8 +437,24 @@ export async function createOutboundDocument(
     // the memo↔invoice coupling gap — the invoice IS the resolving document, the
     // mirror of a return doc resolving a line to RETURNED.
     if (type === "INVOICE") {
-      const soldFromMemo = snapshots.filter((s) => s.currentStatus === "ON_MEMO");
       const affectedMemoIds = new Set<string>();
+
+      // A settled parcel slice names the exact line it bought. Resolving by item
+      // id instead would sweep up another client's slice of the same lot.
+      for (const s of snapshots) {
+        if (!s.settlesMemoLineId) continue;
+        const ml = await tx.documentLineItem.update({
+          where: { id: s.settlesMemoLineId },
+          data: { lineStatus: "SOLD", resolvedByDocumentId: doc.id }
+        });
+        affectedMemoIds.add(ml.documentId);
+      }
+
+      // Single stones (and pairs): the item itself was ON_MEMO, and a stone can
+      // only ever be on one memo, so resolving by item id is unambiguous here.
+      const soldFromMemo = snapshots.filter(
+        (s) => !s.settlesMemoLineId && s.currentStatus === "ON_MEMO"
+      );
       for (const s of soldFromMemo) {
         const memoLines = await tx.documentLineItem.findMany({
           where: {
@@ -1205,8 +1286,25 @@ export async function recordMemoReturn(
         data: { lineStatus: "RETURNED", resolvedByDocumentId: returnDoc.id }
       });
       const item = await tx.inventoryItem.findUniqueOrThrow({
-        where: { id: line.inventoryItemId }
+        where: { id: line.inventoryItemId },
+        include: { stone: true }
       });
+
+      // A parcel's carats came off the balance when the memo was written, so a
+      // return puts exactly that slice back — the REVERSE half of the draw pair.
+      if (item.itemSubtype === "PARCEL" && item.stone) {
+        const restored = reverseDraw(item.stone, num(line.caratWeight), line.quantity);
+        await tx.stoneDetail.update({
+          where: { inventoryItemId: item.id },
+          data: { remainingCt: restored.remainingCt, remainingQty: restored.remainingQty }
+        });
+      }
+
+      // A partially-drawn parcel never left IN_STOCK, so there is no transition
+      // to record. Writing one anyway would put IN_STOCK -> IN_STOCK rows in the
+      // audit trail, which is the history a stone's page is read from.
+      if (item.status === "IN_STOCK") continue;
+
       await tx.inventoryItem.update({
         where: { id: line.inventoryItemId },
         data: { status: "IN_STOCK" }
