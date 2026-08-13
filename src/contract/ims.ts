@@ -613,22 +613,48 @@ export const ImsInboundItemInputSchema = z.discriminatedUnion("itemType", [
 ]);
 export type ImsInboundItemInput = z.infer<typeof ImsInboundItemInputSchema>;
 
-// Create an inbound document that RECEIVES new inventory from a vendor
-// (Jennifer 2026-07-22: the inbound doc IS the upload vehicle). BILL_IN =
-// purchase (RADIIA owns) vs MEMO_IN = consignment (vendor keeps ownership) — the
-// owned-vs-consigned distinction is the doc TYPE, not an item field. Each item
-// row is created (-> IN_STOCK), inherits this doc's vendor, and links to the doc.
-// Inbound docs carry the vendor's own number in externalReference and never mint
-// an internal documentNumber. No discount field: the read mapper prices inbound
-// docs at line-cost subtotal (payment/terms live in QuickBooks, not the portal).
-export const ImsCreateInboundDocumentSchema = z.object({
-  type: z.enum(["BILL_IN", "MEMO_IN"]),
-  vendorId: z.string().min(1),
-  issueDate: ImsIssueDateSchema.optional(),
-  externalReference: z.string().optional(),
-  notes: z.string().optional(),
-  items: z.array(ImsInboundItemInputSchema).min(1)
-});
+// Create an inbound document that RECEIVES new inventory (Jennifer 2026-07-22:
+// the inbound doc IS the upload vehicle). Each item row is created (-> IN_STOCK)
+// and links to the doc. Three inbound types, split by WHO owns the goods:
+//   • BILL_IN  = purchase, RADIIA owns    ─┐ vendor-owned: items inherit the
+//   • MEMO_IN  = consignment, vendor owns ─┘ doc's `vendorId`; addressed to the
+//                vendor; the vendor's own number rides in externalReference and
+//                no internal documentNumber is minted.
+//   • BRAND_INVENTORY_IN = a designer/brand whose inventory RADIIA HOLDS and
+//                manages: items are tagged to the brand owner (`brandOwnerId`, a
+//                Company), the doc is addressed to that Company, and — because
+//                RADIIA originates it (no vendor bill) — it mints its own
+//                BIN-#### number and carries no due date.
+// The owned-vs-consigned distinction stays the doc TYPE, not an item field.
+// Exactly one party is supplied: vendorId for BILL_IN/MEMO_IN, brandOwnerId for
+// BRAND_INVENTORY_IN (enforced below). No discount field: the read mapper prices
+// inbound docs at line-cost subtotal (payment/terms live in QuickBooks).
+export const ImsCreateInboundDocumentSchema = z
+  .object({
+    type: z.enum(["BILL_IN", "MEMO_IN", "BRAND_INVENTORY_IN"]),
+    vendorId: z.string().min(1).optional(),
+    brandOwnerId: z.string().min(1).optional(),
+    issueDate: ImsIssueDateSchema.optional(),
+    externalReference: z.string().optional(),
+    notes: z.string().optional(),
+    items: z.array(ImsInboundItemInputSchema).min(1)
+  })
+  .refine((d) => d.type !== "BRAND_INVENTORY_IN" || !!d.brandOwnerId, {
+    message: "A Brand In requires a brand owner.",
+    path: ["brandOwnerId"]
+  })
+  .refine((d) => d.type !== "BRAND_INVENTORY_IN" || !d.vendorId, {
+    message: "A Brand In is addressed to a brand owner, not a vendor.",
+    path: ["vendorId"]
+  })
+  .refine((d) => d.type === "BRAND_INVENTORY_IN" || !!d.vendorId, {
+    message: "A Bill In / Memo In requires a vendor.",
+    path: ["vendorId"]
+  })
+  .refine((d) => d.type === "BRAND_INVENTORY_IN" || !d.brandOwnerId, {
+    message: "Only a Brand In carries a brand owner.",
+    path: ["brandOwnerId"]
+  });
 export type ImsCreateInboundDocument = z.infer<typeof ImsCreateInboundDocumentSchema>;
 
 // ── Bulk CSV import (inbound) ────────────────────────────────────────────────

@@ -26,7 +26,8 @@
     "purge:dev": "dotenv -e .env.dev -- tsx scripts/inventory-purge.ts",
     "skylab:fetch": "dotenv -e .env.local -- tsx scripts/skylab-api.ts fetch",
     "skylab:reconcile": "dotenv -e .env.local -- tsx scripts/skylab-api.ts reconcile",
-    "smoke:void": "dotenv -e .env.dev -- tsx scripts/void-smoke.ts"
+    "smoke:void": "dotenv -e .env.dev -- tsx scripts/void-smoke.ts",
+    "smoke:brandin": "dotenv -e .env.dev -- tsx scripts/brand-in-smoke.ts"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",
