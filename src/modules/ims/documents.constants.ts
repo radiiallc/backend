@@ -19,7 +19,7 @@ export const DOC_PREFIX: Record<DocumentType, string> = {
   INVOICE: "INV",
   PURCHASE_ORDER: "PO",
   BRAND_INVENTORY_IN: "BIN",
-  BRAND_INVENTORY_OUT: "BIN",
+  BRAND_INVENTORY_OUT: "BOU", // distinct prefix so BIN-#### stays unique to Brand In
   MEMO_IN: "MIN",
   BILL_IN: "BIL",
   RETURN_MEMO_OUT: "RET",

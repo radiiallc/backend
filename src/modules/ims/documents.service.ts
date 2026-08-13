@@ -973,16 +973,34 @@ export async function createInboundDocument(
   input: ImsCreateInboundDocument,
   createdById: string
 ): Promise<CreateDocumentResult> {
-  const vendor = await prisma.vendor.findUnique({
-    where: { id: input.vendorId },
-    select: { id: true, defaultMemoTermsDays: true, defaultInvoiceTermsDays: true }
-  });
-  if (!vendor) return { ok: false, error: "Vendor not found" };
-
+  const isBrandIn = input.type === "BRAND_INVENTORY_IN";
   const issueDate = issuedAt(input.issueDate);
-  const termDays =
-    input.type === "MEMO_IN" ? vendor.defaultMemoTermsDays : vendor.defaultInvoiceTermsDays;
-  const dueDate = termDays ? new Date(issueDate.getTime() + termDays * 86_400_000) : null;
+
+  // Resolve the party + the owner each received item is tagged with. A Bill In /
+  // Memo In is addressed to a vendor and items inherit that vendorId; a Brand In
+  // is addressed to the brand owner (a Company) and items inherit brandOwnerId —
+  // it's the designer's stock we hold, so it carries no vendor and no due date.
+  let owner: { vendorId: string } | { brandOwnerId: string };
+  let dueDate: Date | null;
+  if (isBrandIn) {
+    const brand = await prisma.company.findUnique({
+      where: { id: input.brandOwnerId! },
+      select: { id: true }
+    });
+    if (!brand) return { ok: false, error: "Brand owner not found" };
+    owner = { brandOwnerId: brand.id };
+    dueDate = null;
+  } else {
+    const vendor = await prisma.vendor.findUnique({
+      where: { id: input.vendorId! },
+      select: { id: true, defaultMemoTermsDays: true, defaultInvoiceTermsDays: true }
+    });
+    if (!vendor) return { ok: false, error: "Vendor not found" };
+    owner = { vendorId: vendor.id };
+    const termDays =
+      input.type === "MEMO_IN" ? vendor.defaultMemoTermsDays : vendor.defaultInvoiceTermsDays;
+    dueDate = termDays ? new Date(issueDate.getTime() + termDays * 86_400_000) : null;
+  }
 
   // SKU strategy: honor a caller-supplied SKU (bulk-CSV migration preserving the
   // template's "RADIIA SKU" column); auto-mint for any item without one. Validate
@@ -1103,7 +1121,7 @@ export async function createInboundDocument(
               continue;
             }
 
-            const data = buildInboundItemCreateData(input.items[i], input.vendorId, skus[i]) as Record<
+            const data = buildInboundItemCreateData(input.items[i], owner, skus[i]) as Record<
               string,
               unknown
             >;
@@ -1138,13 +1156,27 @@ export async function createInboundDocument(
             if (materialRows.length) await tx.otherMaterialDetail.createMany({ data: materialRows as any });
           }
 
+          // A Brand In is a doc RADIIA originates (no vendor bill), so it mints its
+          // own BIN-#### number like an outbound doc. A Bill In / Memo In instead
+          // records the vendor's own number in externalReference and mints none.
+          let documentNumber: string | null = null;
+          if (isBrandIn) {
+            const seq = await tx.documentSequence.upsert({
+              where: { type: input.type },
+              create: { type: input.type, lastValue: 1001 },
+              update: { lastValue: { increment: 1 } }
+            });
+            documentNumber = `${DOC_PREFIX[input.type]}-${seq.lastValue}`;
+          }
+
           const doc = await tx.document.create({
             data: {
               type: input.type,
-              documentNumber: null, // inbound uses the vendor's own reference
+              documentNumber,
               externalReference: input.externalReference ?? null,
               status: "OPEN",
-              vendorId: input.vendorId,
+              vendorId: "vendorId" in owner ? owner.vendorId : null,
+              clientId: "brandOwnerId" in owner ? owner.brandOwnerId : null,
               issueDate,
               dueDate,
               notes: input.notes ?? null,

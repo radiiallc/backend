@@ -102,13 +102,16 @@ export async function mintSkuBatch(
 // createInventoryItem, incl. the app-computed stone totals.
 export function buildInboundItemCreateData(
   input: ImsInboundItemInput,
-  vendorId: string,
+  owner: { vendorId: string } | { brandOwnerId: string },
   sku: string
 ): Prisma.InventoryItemUncheckedCreateInput {
   const core = {
     sku,
     itemType: input.itemType,
-    vendorId,
+    // A Bill In / Memo In inherits the doc's vendor; a Brand In tags the item to
+    // the brand owner instead (a designer's stock RADIIA holds). Exactly one FK.
+    vendorId: "vendorId" in owner ? owner.vendorId : null,
+    brandOwnerId: "brandOwnerId" in owner ? owner.brandOwnerId : null,
     itemName: input.itemName ?? null,
     vendorSku: input.vendorSku ?? null,
     notes: input.notes ?? null,
