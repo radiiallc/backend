@@ -1,23 +1,3 @@
-/**
- * csv-import — forgiving parser turning an uploaded inventory sheet (Jennifer's
- * 7-13 template, one tab/category) into inbound item payloads for a Bill In /
- * Memo In. Diamonds + Gems share the STONE shape; Jewelry / Other map to their
- * detail tables. See docs/phase-h/inventory-schema-baseline.md §4 for the column
- * maps. This module PARSES ONLY — the caller previews, then POSTs the ok items to
- * the existing inbound-create endpoint.
- *
- * Takes .xlsx as well as .csv: Jennifer works in Excel, so the workbook is read
- * directly (see xlsx-import) rather than making her re-save every file. Both
- * formats reduce to the same string grid, so all the matching rules below apply
- * identically whichever she sends.
- *
- * Forgiving by design: headers match case/space/punctuation-insensitively with
- * aliases; a header's trailing "(…)" hint is ignored; money/number cells tolerate
- * $ and thousands separators. Each built row is validated against the real
- * ImsInboundItemInputSchema so a preview error is exactly what the create would
- * reject — no row can slip through and 400 later.
- */
-
 import { parse } from "csv-parse/sync";
 
 import {
@@ -30,33 +10,16 @@ import {
 
 import { isLegacyXls, isZipArchive, readWorkbookGrid, WorkbookError } from "./xlsx-import";
 
-// "RADIIA SKU" → "radiiasku"; "Stone Type (Natural, Lab)" → "stonetype";
-// "Cost per carat" → "costpercarat". Drop any "(…)" hint, keep a–z0–9. "%" → "pct"
-// FIRST, so "Depth %" → "depthpct" stays distinct from the "Depth" (mm) column
-// (both would otherwise collapse to "depth"); likewise "Table %" → "tablepct".
 function normalizeHeader(h: string): string {
   return h.split("(")[0].toLowerCase().replace(/%/g, "pct").replace(/[^a-z0-9]/g, "");
 }
 
-// Recover aliases from a header's parenthetical hint. Jennifer's Memo In / Bill In
-// template mislabels the Lot Type column as a *second* "Stone Type (Parcel, Pair,
-// Single)" — its base label ("stonetype") collides with the real Stone Type column
-// and would be dropped, silently defaulting every row to SINGLE. Any header whose
-// text names the lot-type values is therefore also indexed under "lottype".
 function hintAliases(header: string): string[] {
   return /\b(parcel|pair|single)\b/i.test(header) ? ["lottype"] : [];
 }
 
 const LOT_TYPE_VALUE = /^(parcels?|pairs?|singles?)$/i;
 
-// Last-ditch rescue for a Lot Type column that is BOTH duplicate-named and
-// hint-less — Jennifer's 7-30 sheet heads it plain "Stone type" (same text as the
-// real gem-variety column, no "(Parcel, Pair, Single)" to key off). Dropping it
-// would default every row to SINGLE, silently turning a parcel into one stone,
-// which is exactly the case the melee pilot's draw-down depends on. So: only for
-// columns whose header collided with an earlier one, and only when EVERY non-empty
-// value in the column is literally a lot-type word, claim "lottype". Header text
-// still wins — this never overrides a properly labeled column.
 function claimLotTypeByValue(
   headerIndex: Map<string, number>,
   collidedColumns: number[],
@@ -74,9 +37,6 @@ function claimLotTypeByValue(
   }
 }
 
-// "Show on website?" → visibleOnPortal. Anything affirmative is true, anything
-// negative is false, blank/unrecognized leaves the field unset (the item then
-// takes the server default: not visible — nothing leaks by accident).
 function bool(raw: string): boolean | undefined {
   const s = (raw ?? "").trim().toLowerCase();
   if (s === "") return undefined;
@@ -93,12 +53,21 @@ function num(raw: string): number | null {
   const n = Number(cleaned);
   return Number.isFinite(n) ? n : null;
 }
-
-// Optional string → trimmed value or undefined (so a blank leaves the field unset
-// rather than sending "").
 function str(raw: string): string | undefined {
   const t = (raw ?? "").trim();
   return t === "" ? undefined : t;
+}
+
+// Fantasy prices wholesale and retail as a LINE TOTAL, while we store per carat.
+// Divide rather than make her add a formula column to every export.
+//
+// A zero total is Fantasy's empty (its "Total Retail Price" is 0 on every row of
+// both samples), so it stays null instead of asserting the stones are worth
+// nothing — a real zero price would be indistinguishable from an unfilled one.
+function perCtFromTotal(total: number | null, weightCt: number | null): number | null {
+  if (total === null || total <= 0) return null;
+  if (weightCt === null || weightCt <= 0) return null;
+  return Math.round((total / weightCt) * 100) / 100;
 }
 
 function toSubtype(raw: string): "SINGLE" | "PAIR" | "PARCEL" {
@@ -106,6 +75,9 @@ function toSubtype(raw: string): "SINGLE" | "PAIR" | "PARCEL" {
   if (s.includes("parcel")) return "PARCEL";
   if (s.includes("pair")) return "PAIR";
   return "SINGLE"; // default (Lot Type is nominally required; be forgiving)
+}
+function isClosedLine(raw: string): boolean {
+  return /^(closed|cancell?ed|void(ed)?|inactive)$/i.test((raw ?? "").trim());
 }
 
 function toNaturalOrLab(raw: string): "NATURAL" | "LAB" | undefined {
@@ -115,15 +87,39 @@ function toNaturalOrLab(raw: string): "NATURAL" | "LAB" | undefined {
   return undefined;
 }
 
-// Diamonds collapse white grade + fancy into one "Color" column. Keep it lossless:
-// a "Fancy …" value goes to fancyColor (color left null); anything else is a white
-// grade → color. (A finer hue/intensity split is deliberately not attempted — a
-// wrong split is worse than one faithful field.)
 function splitDiamondColor(raw: string): { color: string | undefined; fancyColor: string | undefined } {
   const v = (raw ?? "").trim();
   if (v === "") return { color: undefined, fancyColor: undefined };
   if (/fancy/i.test(v)) return { color: undefined, fancyColor: v };
   return { color: v, fancyColor: undefined };
+}
+
+const HEADER_SIGNALS = new Set([
+  "sku", "radiiasku", "stock", "vendorsku",
+  "shape", "weight", "carat", "caratweight", "weightct", "qty", "quantity",
+  "color", "clarity", "cut", "cutgrade", "lab", "certno", "certnumber",
+  "gemtype", "stonetype", "lottype", "origin", "treatment",
+  "cost", "costpercarat", "pricepct",
+  "metal", "jewelrytype", "materialtype", "description"
+]);
+
+// Only the top of the sheet: past this, a "header" is a mis-scored data row.
+const HEADER_SCAN_ROWS = 10;
+
+export function findHeaderRow(records: string[][]): number {
+  let best = 0;
+  let bestScore = 0;
+  const limit = Math.min(records.length, HEADER_SCAN_ROWS);
+  for (let i = 0; i < limit; i++) {
+    const keys = new Set(records[i].map(normalizeHeader).filter(Boolean));
+    let score = 0;
+    for (const k of keys) if (HEADER_SIGNALS.has(k)) score++;
+    if (score > bestScore) {
+      bestScore = score;
+      best = i;
+    }
+  }
+  return bestScore >= 2 ? best : 0;
 }
 
 // A single data row's header→value accessor: first matching alias wins.
@@ -156,25 +152,21 @@ function buildRawItem(category: ImsCsvCategory, get: RowGet): Record<string, unk
     const { color, fancyColor } = category === "diamonds"
       ? splitDiamondColor(get(["color"]))
       : { color: str(get(["color"])), fancyColor: undefined };
+    const weightCt = num(get(["carat", "caratweight", "caratwt", "weight", "weightct", "carats", "ct", "totalcarat", "totalcaratweight", "tcw"]));
     const stone: Record<string, unknown> = {
       shape: str(get(["shape"])),
-      // "Carat" (7-13 template) and "Carat weight" (Jennifer's 7-30 sheet) are the
-      // same column; a miss here rejects the whole row, so spell out the variants.
-      weightCt: num(get(["carat", "caratweight", "caratwt", "weight", "weightct", "carats", "ct", "totalcarat", "totalcaratweight", "tcw"])),
+      weightCt,
       quantity: num(get(["quantity", "qty"])),
       color,
       fancyColor,
       clarity: str(get(["clarity"])),
-      // Cut grade is absent from the 7-13 template (baseline §4 note 12 left it
-      // "GIA auto-populate only"), but a real vendor sheet usually has the column
-      // and dropping it silently loses a grade we store, show and price on.
       cutGrade: str(get(["cut", "cutgrade"])),
       polish: str(get(["pol", "polish"])),
       symmetry: str(get(["symm", "symmetry"])),
       fluorescence: str(get(["fluo", "fluorescence", "fluor"])),
-      lengthMm: num(get(["length"])),
-      widthMm: num(get(["width"])),
-      heightMm: num(get(["depth", "height"])), // "Depth" (mm) among the mm dims = physical height
+      lengthMm: num(get(["length", "m1"])),
+      widthMm: num(get(["width", "m2"])),
+      heightMm: num(get(["depth", "height", "m3"])), // "Depth" (mm) among the mm dims = physical height
       depthPct: num(get(["depthpct", "depthpercent"])), // distinct "Depth %" column
       tablePct: num(get(["tablepct", "tablepercent", "table"])),
       ratio: num(get(["ratio"])),
@@ -182,23 +174,23 @@ function buildRawItem(category: ImsCsvCategory, get: RowGet): Record<string, unk
       certNumber: str(get(["certno", "certnumber", "certificate", "certificateno", "certificatenumber", "cert"])),
       treatment: str(get(["treatment"])),
       origin: str(get(["origin"])),
-      costPerCt: num(get(["costpercarat", "costperct", "cost"])),
-      // The 7-13 template heads these "Wholesale per carat"; Jennifer's 7-30 sheet
-      // says "Wholesale price per carat" / "Retail price per carat". Same columns.
-      wholesalePricePerCt: num(get(["wholesalepercarat", "wholesaleperct", "wholesalepricepercarat", "wholesalepriceperct", "wholesaleprice", "wholesale"])),
-      retailPricePerCt: num(get(["retailpercarat", "retailperct", "retailpricepercarat", "retailpriceperct", "retailprice", "retail"])),
+      costPerCt: num(get(["costpercarat", "costperct", "cost", "pricepercarat", "priceperct", "pricepct"])),
+      wholesalePricePerCt:
+        num(get(["wholesalepercarat", "wholesaleperct", "wholesalepricepercarat", "wholesalepriceperct", "wholesaleprice", "wholesale"])) ??
+        perCtFromTotal(num(get(["totalwholesaleprice"])), weightCt),
+      retailPricePerCt:
+        num(get(["retailpercarat", "retailperct", "retailpricepercarat", "retailpriceperct", "retailprice", "retail"])) ??
+        perCtFromTotal(num(get(["totalretailprice"])), weightCt),
       photo1Url: str(get(["image1", "photo1", "image"])),
       photo2Url: str(get(["image2", "photo2"])),
       videoUrl: str(get(["video"]))
     };
     if (category === "diamonds") {
-      // "Diamond" is the literal the Inventory list's Diamonds-tab filter checks
-      // (admin/src/lib/item.ts) — every other diamond-creation path sets it; this
-      // one has to too, or the row silently lands on the Gemstones tab instead.
       stone.gemType = "Diamond";
       stone.naturalOrLab = toNaturalOrLab(get(["stonetype", "type", "naturalorlab"]));
     } else {
       stone.gemType = str(get(["stonetype", "type", "gemtype", "variety"]));
+      stone.naturalOrLab = toNaturalOrLab(get(["naturalorlab"]));
     }
     return {
       itemType: "STONE",
@@ -272,20 +264,23 @@ function fileError(category: ImsCsvCategory, error: string, sheetName: string | 
     totalRows: 0,
     okCount: 0,
     errorCount: 1,
+    closedCount: 0,
     restockCount: 0,
     rows: [{ rowNumber: 0, sku: null, ok: false, error, item: null }],
     items: []
   };
 }
 
-// The shared core: a string grid (row 0 = header) → validated inbound items.
+// The shared core: a string grid → validated inbound items. The header is found
+// rather than assumed (see findHeaderRow); anything above it is preamble.
 // CSV text and .xlsx cells both arrive here, so the two formats can't drift.
 function parseRecords(
   category: ImsCsvCategory,
   records: string[][],
   sheetName: string | null
 ): ImsParseInboundCsvResult {
-  if (records.length < 2) {
+  const headerRow = records.length ? findHeaderRow(records) : 0;
+  if (records.length < headerRow + 2) {
     return fileError(
       category,
       sheetName
@@ -297,7 +292,7 @@ function parseRecords(
 
   const headerIndex = new Map<string, number>();
   const collidedColumns: number[] = [];
-  records[0].forEach((h, i) => {
+  records[headerRow].forEach((h, i) => {
     const key = normalizeHeader(h);
     if (key && !headerIndex.has(key)) headerIndex.set(key, i);
     else if (key) collidedColumns.push(i);
@@ -308,10 +303,11 @@ function parseRecords(
     }
   });
 
-  const dataRows = records.slice(1);
+  const dataRows = records.slice(headerRow + 1);
   claimLotTypeByValue(headerIndex, collidedColumns, dataRows);
   const rows: ImsCsvRowResult[] = [];
   const items: ImsInboundItemInput[] = [];
+  let closedCount = 0;
 
   dataRows.forEach((row, i) => {
     const rowNumber = i + 1;
@@ -319,6 +315,15 @@ function parseRecords(
     if (row.every((c) => (c ?? "").trim() === "")) return;
 
     const get = makeGet(headerIndex, row);
+    // A Fantasy export carries settled lines alongside live ones (Jennifer
+    // 2026-08-12: "I'm fine with closed not being imported, because it means
+    // it's no longer active anyway"). Silently, and only when the column is
+    // present: a closed line is not a row she needs to see an error about.
+    if (isClosedLine(get(["doclinestatus", "linestatus"]))) {
+      closedCount++;
+      return;
+    }
+
     const sku = str(get(["radiiasku", "sku", "stock"])) ?? null;
     const raw = buildRawItem(category, get);
     const parsed = ImsInboundItemInputSchema.safeParse(raw);
@@ -337,6 +342,7 @@ function parseRecords(
     totalRows: rows.length,
     okCount: rows.length - errorCount,
     errorCount,
+    closedCount,
     // Set by annotateRestocks once the parse is checked against live inventory;
     // a bare parse knows nothing about what is already in stock.
     restockCount: 0,
