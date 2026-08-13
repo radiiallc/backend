@@ -721,6 +721,11 @@ export interface ImsParseInboundCsvResult {
   // How many of the ok rows top up stock that already exists (rather than
   // creating a new item). Zero on a normal first-time import.
   restockCount: number;
+  // Rows dropped before validation because the sheet marks them settled (a
+  // Fantasy export's "Doc Line Status" = Closed). Counted rather than merely
+  // skipped: on a migration, a row that quietly disappears is the one thing
+  // that makes the totals impossible to trust. Not included in totalRows.
+  closedCount: number;
   rows: ImsCsvRowResult[];
   items: ImsInboundItemInput[];
 }
