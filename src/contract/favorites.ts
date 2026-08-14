@@ -1,11 +1,5 @@
 import { z } from "zod";
 
-// ────────────────────────────────────────────────────────────────────────────
-// Favorites wire contract. Polymorphic (gemstone XOR diamond) like cart; the
-// FavoriteLine.gemstoneId field carries whichever id applies (legacy name).
-// addedAt is the ISO string the JSON wire produces (Date in the DB row).
-// ────────────────────────────────────────────────────────────────────────────
-
 export const FavoriteLineSchema = z.object({
   favoriteId: z.string(),
   gemstoneId: z.string(),
@@ -35,7 +29,6 @@ export type FavoriteBulkResult =
 export const FavoriteCountSchema = z.object({ count: z.number() });
 export type FavoriteCount = z.infer<typeof FavoriteCountSchema>;
 
-// ── Mutation request bodies ─────────────────────────────────────────────────
 export const FavoriteItemBodySchema = z.object({ itemId: z.string().min(1) });
 export type FavoriteItemBody = z.infer<typeof FavoriteItemBodySchema>;
 

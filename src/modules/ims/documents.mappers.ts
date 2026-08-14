@@ -3,8 +3,6 @@ import type { ImsDocument, ImsDocumentLineItem, PartyKind } from "@/contract";
 
 import { docDirectionOf } from "./documents.constants";
 
-// Relations every Document DTO needs: both parties (for the resolved display
-// name), the parent memo (returns), and each line's item + resolving doc.
 export const IMS_DOC_INCLUDE = {
   vendor: { select: { name: true } },
   client: { select: { name: true } },
@@ -48,15 +46,11 @@ function prismaLineToDto(line: PrismaLineWithRelations): ImsDocumentLineItem {
 
 export function prismaDocToDto(doc: PrismaDocWithRelations): ImsDocument {
   const direction = docDirectionOf(doc.type);
-  // partyKind derives from whichever FK is actually set (more robust than the
-  // type table); null if neither is set.
   const partyKind: PartyKind | null = doc.vendorId ? "vendor" : doc.clientId ? "client" : null;
   const partyName = doc.vendor?.name ?? doc.client?.name ?? null;
   const discount = decOrNull(doc.discountAmount);
 
   const lineItems = doc.lineItems.map(prismaLineToDto);
-  // Total derives from the lines: subtotal minus discount for outbound docs.
-  // Null when no line carries a price (e.g. a return doc).
   const priced = lineItems.filter((l) => l.totalPrice !== null);
   const subtotal = priced.reduce((sum, l) => sum + (l.totalPrice ?? 0), 0);
   let total: number | null = null;

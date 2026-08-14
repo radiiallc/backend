@@ -98,9 +98,6 @@ export function detectFileTarget(filename: string): FileTarget | null {
   return null;
 }
 
-// A "feed" is one upstream source the team monitors. `key` is the stable id used
-// to persist per-feed ingest status; `label` is what the dashboard shows. The
-// gemstone feed is RADIIA's own stones, hence the "RADIIA" label.
 export type FeedIdentity = { key: string; label: string };
 
 export function feedIdentityForTarget(target: FileTarget): FeedIdentity {
@@ -135,8 +132,6 @@ export function parseRapNetCsv(csvText: string, target: FileTarget): RapNetParse
       continue;
     }
 
-    // Gemstones: ingest single stones and matched pairs only — never parcels
-    // (a lot of multiple loose stones sold together).
     if (target.kind === "gemstone" && isParcel(raw)) {
       tally(REJECT_PARCEL);
       continue;
@@ -195,10 +190,6 @@ export function parseRapNetCsv(csvText: string, target: FileTarget): RapNetParse
         certNumber,
         certUrl: nullable(raw["Certificate URL"]),
         imageUrl: stripVendorHost(pickMediaUrl(nullable(raw.PHOTO), "image")),
-        // Second image ("gem on hand"): the vendor serves these from its own host
-        // (radiia2.fantasy.mn), so it can't go through stripVendorHost like PHOTO —
-        // that would always null it. Keep the raw vendor URL; it's never sent to the
-        // browser (the portal streams it through a same-domain proxy, Gate §8).
         image2Url: secondImageUrl(nullable(raw.Image)),
         videoUrl: stripVendorHost(pickMediaUrl(nullable(raw.VIDEO), "video")),
         origin: gemstoneOrigin(raw),
@@ -254,7 +245,6 @@ export function parseRapNetCsv(csvText: string, target: FileTarget): RapNetParse
   };
 }
 
-
 const PARCEL_TYPE_COLUMNS = [
   "Item",
   "Stock #",
@@ -301,12 +291,6 @@ function stripVendorHost(url: string | null): string | null {
 const VIDEO_FILE_RE = /\.(mp4|webm|ogg|mov|m4v)(\?|#|$)/i;
 const IMAGE_FILE_RE = /\.(jpe?g|png|gif|webp|avif|bmp|svg)(\?|#|$)/i;
 
-// A single PHOTO/VIDEO feed cell sometimes contains two URLs jammed together
-// with no separator — the vendor's VIDEO column leaks the PHOTO url onto the
-// end, e.g. "https://…/x.mp4?tr=f-mp4https://…/y.png?tr=f-jpg". That makes the
-// stored URL un-loadable (broke video playback on ~half the gemstones). Split
-// on each embedded http(s):// boundary and keep the segment that matches the
-// column's own media type, so VIDEO keeps the video and PHOTO keeps the image.
 function pickMediaUrl(raw: string | null, kind: "video" | "image"): string | null {
   if (!raw) return null;
   const segments = raw
@@ -323,11 +307,6 @@ function pickMediaUrl(raw: string | null, kind: "video" | "image"): string | nul
   );
 }
 
-// Validate + normalize the gemstone "Image" (second image) cell. The vendor's
-// filenames are messy (spaces, stray punctuation) and some rows carry a directory
-// URL with no file (".../api/LotImage/"). Accept only a real http(s) URL that
-// points at a file; return the WHATWG-normalized href so the proxy can fetch it
-// without further encoding. Anything else → null.
 function secondImageUrl(raw: string | null): string | null {
   if (!raw) return null;
   let parsed: URL;
@@ -337,7 +316,7 @@ function secondImageUrl(raw: string | null): string | null {
     return null;
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
-  if (parsed.pathname.endsWith("/")) return null; // directory URL, no filename
+  if (parsed.pathname.endsWith("/")) return null;
   return parsed.href;
 }
 

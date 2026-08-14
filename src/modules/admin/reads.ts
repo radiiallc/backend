@@ -60,8 +60,6 @@ export async function getRequestByIdFromDb(id: string): Promise<AdminRequest | n
   return request ? prismaRequestToAdminRequest(request) : null;
 }
 
-// Order the per-feed rows the way the team reads them; any unknown feed falls to
-// the end. Keyed by the "feed:<key>" suffix.
 const FEED_ORDER = ["skylab", "disons", "gemstones"];
 
 export async function getDashboardKpisFromDb(): Promise<DashboardKpis> {

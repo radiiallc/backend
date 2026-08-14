@@ -17,8 +17,6 @@ import {
 
 export const favoritesRouter = Router();
 
-// Favorites require the buyer capability (BUYER or ADMIN) for both reads and
-// writes — mirrors the pre-split actions (which returned empty for non-buyers).
 favoritesRouter.use(requireAuth);
 favoritesRouter.use((req: Request, res: Response, next: NextFunction) => {
   const role = req.user?.role;
@@ -32,7 +30,6 @@ favoritesRouter.use((req: Request, res: Response, next: NextFunction) => {
 function wrap(handler: (req: Request, res: Response) => Promise<void>) {
   return (req: Request, res: Response): void => {
     handler(req, res).catch((err) => {
-      // eslint-disable-next-line no-console
       console.error("[favorites] handler error", err);
       if (!res.headersSent) res.status(500).json({ error: "Internal error" });
     });
@@ -46,7 +43,6 @@ function companyIdOf(req: Request): string | null {
   return req.user?.companyId ?? null;
 }
 
-// ── Reads ───────────────────────────────────────────────────────────────────
 favoritesRouter.get(
   "/",
   wrap(async (req, res) => {
@@ -68,7 +64,6 @@ favoritesRouter.get(
   })
 );
 
-// ── Mutations ───────────────────────────────────────────────────────────────
 favoritesRouter.post(
   "/",
   wrap(async (req, res) => {

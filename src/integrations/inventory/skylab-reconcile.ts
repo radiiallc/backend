@@ -1,27 +1,12 @@
-// Skylab API ↔ DB reconciliation (WORKPLAN §1.6).
-//
-// Read-only. Fetches the Skylab API, normalizes it, and compares against the
-// current DB Skylab rows WITHOUT writing anything. This powers the "run API + FTP
-// in parallel ~2 weeks, reconcile, then drop FTP" validation phase: while the FTP
-// feed still drives the live table, this shows what the API would change — most
-// importantly the availability leaks (stones the portal shows as available that
-// the API reports are not, i.e. the 638-025ADA class of bug).
-//
-// It also surfaces the two things still unconfirmed with Skylab: the real
-// lot_status vocabulary (statusDistribution) and the shape spelling
-// (shapeDistribution), so the mapping can be verified against live data.
 
 import { prisma } from "@/db";
 
 import { fetchSkylabStock, type SkylabStone } from "./skylab-api";
 import { isSkylabAvailable, parseSkylabStock, skylabLotStatus } from "./skylab-adapter";
 
-// Cap example arrays so a report over ~8k stones stays readable; counts are always
-// exact, only the illustrative lists are truncated.
 const EXAMPLE_CAP = 50;
 
-// Relative price-per-carat delta above which a matched stone is flagged as a diff.
-const PRICE_DIFF_REL = 0.02; // 2%
+const PRICE_DIFF_REL = 0.02;
 
 export type ReconcileExample = {
   certNumber: string | null;
@@ -34,10 +19,10 @@ export type ReconcileExample = {
 export type SkylabReconcileReport = {
   fetchedAt: string;
   api: {
-    total: number; // stones returned by the API
-    available: number; // lot_status in the allow-list
-    usable: number; // available AND has a lot_no/cert (ingestable)
-    withoutCert: number; // usable rows the API sent with no certificate
+    total: number;
+    available: number;
+    usable: number;
+    withoutCert: number;
     statusDistribution: Record<string, number>;
     shapeDistribution: Record<string, number>;
   };
@@ -48,14 +33,10 @@ export type SkylabReconcileReport = {
   };
   reconcile: {
     matchedByCert: number;
-    // DB shows available, API does not list it as available → would be swept to
-    // unavailable at cutover. The headline metric (the leaking-stone fix).
     leakingCount: number;
     leakingExamples: ReconcileExample[];
-    // API available, not present in the DB at all → new stones cutover would add.
     newInApiCount: number;
     newInApiExamples: ReconcileExample[];
-    // Present in both, price-per-carat differs beyond the threshold.
     priceDiffCount: number;
     priceDiffExamples: ReconcileExample[];
   };
@@ -79,7 +60,6 @@ function rawShape(stone: SkylabStone): string {
 export async function reconcileSkylab(): Promise<SkylabReconcileReport> {
   const { stones } = await fetchSkylabStock();
 
-  // Distributions over the whole payload (discovery aids).
   const statusDist = new Map<string, number>();
   const shapeDist = new Map<string, number>();
   for (const stone of stones) {
@@ -89,7 +69,6 @@ export async function reconcileSkylab(): Promise<SkylabReconcileReport> {
 
   const availableCount = stones.filter(isSkylabAvailable).length;
 
-  // Normalized, ingestable (available + has id) rows.
   const usable = parseSkylabStock(stones).rows;
   const apiByCert = new Map<string, (typeof usable)[number]>();
   let apiWithoutCert = 0;
@@ -99,8 +78,6 @@ export async function reconcileSkylab(): Promise<SkylabReconcileReport> {
     else apiWithoutCert++;
   }
 
-  // Current DB Skylab rows (all, so "new in API" excludes ones we already store
-  // even if currently unavailable).
   const dbRows = await prisma.diamond.findMany({
     where: { vendor: "Skylab" },
     select: { certNumber: true, sku: true, isAvailable: true, basePricePerCtUsd: true }
@@ -124,7 +101,6 @@ export async function reconcileSkylab(): Promise<SkylabReconcileReport> {
     if (!dbRow.isAvailable) continue;
     const apiRow = apiByCert.get(cert);
     if (!apiRow) {
-      // Available in DB, but the API doesn't list it as available → a leak.
       leaking.push({ certNumber: dbRow.certNumber, sku: dbRow.sku });
       continue;
     }

@@ -22,10 +22,6 @@ function decToNum(d: Prisma.Decimal | null): number | null {
   return d === null || d === undefined ? null : Number(d.toString());
 }
 
-// Stone totals are app-computed (schema): carat × per-carat, rounded to cents.
-// A leg with no per-carat price computes to null rather than zero — "not priced"
-// and "priced at nothing" are different facts. Named fields, not positionals:
-// three interchangeable nullable numbers in a row is a swap waiting to happen.
 type PerCt = {
   weightCt: number | null;
   wholesalePricePerCt?: number | null;
@@ -52,9 +48,6 @@ function isUniqueViolation(e: unknown): boolean {
   return e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002";
 }
 
-// Auto-mint the next RADIIA SKU. Scans existing RAD-0##### numbers and takes
-// max+1 (base 1000 → first 1001), mirroring the admin's auto-generated SKU. The
-// sku unique constraint is the real backstop; the create retries on collision.
 async function mintSku(): Promise<string> {
   const rows = await prisma.inventoryItem.findMany({
     where: { sku: { startsWith: "RAD-0" } },
@@ -71,11 +64,6 @@ async function mintSku(): Promise<string> {
   return `RAD-0${max + 1}`;
 }
 
-// Mint N sequential RADIIA SKUs from a SINGLE max-scan, transaction-aware (pass
-// the tx client so the scan sees committed state before the batch inserts).
-// Assigns max+1 … max+N; the sku unique constraint + the caller's retry cover a
-// race with a concurrent minter. Used by the inbound-doc receive (many items at
-// once); the single mintSku above stays for one-off creates.
 export async function mintSkuBatch(
   tx: Prisma.TransactionClient,
   count: number
@@ -95,11 +83,6 @@ export async function mintSkuBatch(
   return Array.from({ length: count }, (_, i) => `RAD-0${max + 1 + i}`);
 }
 
-// Build the Prisma create input for one item + its detail group from an inbound
-// item row. vendorId is supplied by the caller (the inbound doc's vendor);
-// brandOwner is not set on a standard vendor Bill In / Memo In. The SKU is
-// supplied by the caller (batch-minted). Mirrors the detail shaping in
-// createInventoryItem, incl. the app-computed stone totals.
 export function buildInboundItemCreateData(
   input: ImsInboundItemInput,
   owner: { vendorId: string } | { brandOwnerId: string },
@@ -108,8 +91,6 @@ export function buildInboundItemCreateData(
   const core = {
     sku,
     itemType: input.itemType,
-    // A Bill In / Memo In inherits the doc's vendor; a Brand In tags the item to
-    // the brand owner instead (a designer's stock RADIIA holds). Exactly one FK.
     vendorId: "vendorId" in owner ? owner.vendorId : null,
     brandOwnerId: "brandOwnerId" in owner ? owner.brandOwnerId : null,
     itemName: input.itemName ?? null,
@@ -133,14 +114,6 @@ export function buildInboundItemCreateData(
   return { ...core, material: { create: { ...input.material } } };
 }
 
-// Adjust a parcel's remaining balance outside any document — a physical recount
-// or a write-off of the unsellable remainder. See resolveAdjust for why this
-// exists: melee sold in 0.40 ct slices strands a crumb that no invoice will ever
-// clear, and the parcel would otherwise sit open forever.
-//
-// Emptying a parcel this way marks it SOLD, which is the closest honest status:
-// the stock is gone and it left through RADIIA. The audit note carries the real
-// reason, and is mandatory.
 export async function adjustParcelRemaining(
   id: string,
   input: ImsAdjustParcelRemaining,
@@ -169,8 +142,6 @@ export async function adjustParcelRemaining(
         data: { status: nextStatus, visibleOnPortal: false }
       });
     }
-    // Always audit, even when the status did not move — the balance change is
-    // the event worth recording, not the status.
     await tx.itemStatusHistory.create({
       data: {
         inventoryItemId: id,
@@ -206,17 +177,12 @@ async function assertPartiesExist(
   return null;
 }
 
-// Create one inventory item + its single detail group. Status is always the
-// schema default (IN_STOCK) — a manual add never sets status; that moves only
-// through documents / reserve-release. No ItemStatusHistory row: creation is the
-// item's origin, not a status change "through a document".
 export async function createInventoryItem(
   input: ImsCreateInventoryItem
 ): Promise<CreateItemResult> {
   const partyError = await assertPartiesExist(input.vendorId, input.brandOwnerId);
   if (partyError) return { ok: false, error: partyError };
 
-  // Core fields shared by every type (status/enteredStockAt use schema defaults).
   const core = {
     itemType: input.itemType,
     vendorId: input.vendorId ?? null,
@@ -233,7 +199,7 @@ export async function createInventoryItem(
     const totals = stoneTotals(s);
     detail = {
       ...core,
-      sku: "", // replaced per attempt below
+      sku: "",
       itemSubtype: input.itemSubtype ?? null,
       stone: { create: { ...s, ...totals, ...parcelOpeningBalance(input.itemSubtype, s) } }
     };
@@ -252,16 +218,13 @@ export async function createInventoryItem(
       });
       return { ok: true, item: prismaItemToDto(created) };
     } catch (e) {
-      if (isUniqueViolation(e) && attempt < 2) continue; // sku raced — re-mint
+      if (isUniqueViolation(e) && attempt < 2) continue;
       throw e;
     }
   }
   return { ok: false, error: "Could not allocate a unique SKU — please retry" };
 }
 
-// Patch an item's core + own-type detail fields. Never changes status (documents
-// / reserve-release own that) and never changes itemType. An absent key is left
-// unchanged; an explicit null clears a nullable field.
 export async function updateInventoryItem(
   id: string,
   input: ImsUpdateInventoryItem
@@ -272,7 +235,6 @@ export async function updateInventoryItem(
   });
   if (!item) return { ok: false, error: "Inventory item not found" };
 
-  // A detail patch may only target the item's own type.
   if (input.stone && item.itemType !== "STONE")
     return { ok: false, error: "Cannot apply a stone patch to a non-stone item" };
   if (input.jewelry && item.itemType !== "JEWELRY")
@@ -294,8 +256,6 @@ export async function updateInventoryItem(
   if (input.itemSubtype !== undefined) data.itemSubtype = input.itemSubtype;
 
   if (input.stone) {
-    // Recompute totals from the merged (existing ⊕ patch) price/weight so an edit
-    // to carat or per-ct keeps the stored totals correct.
     const ex = item.stone!;
     const weightCt = input.stone.weightCt ?? decToNum(ex.weightCt);
     const wholesalePricePerCt =
@@ -309,8 +269,6 @@ export async function updateInventoryItem(
         ? input.stone.retailPricePerCt
         : decToNum(ex.retailPricePerCt);
     const totals = stoneTotals({ weightCt, wholesalePricePerCt, costPerCt, retailPricePerCt });
-    // Carry the parcel balance along with a weight/qty correction, but only
-    // while nothing has been drawn yet (see rebaseUntouchedParcel).
     const rebased = rebaseUntouchedParcel(
       input.itemSubtype !== undefined ? input.itemSubtype : item.itemSubtype,
       ex,
@@ -338,10 +296,6 @@ async function loadItemDto(id: string): Promise<ImsInventoryItem> {
   return prismaItemToDto(item);
 }
 
-// Reserve an in-stock item as a hold for a client (admin reserve/hold). This is
-// the one non-document status transition, so it still writes an
-// ItemStatusHistory audit row (with no documentId). A held stone is pulled from
-// the portal. Only an IN_STOCK item can be newly reserved.
 export async function reserveItem(
   id: string,
   clientId: string,
@@ -381,9 +335,6 @@ export async function reserveItem(
   return { ok: true, item: await loadItemDto(id) };
 }
 
-// Release a held item back to stock (admin release). Clears the hold + audits
-// it. visibleOnPortal is left as-is (staff re-list deliberately, mirroring a
-// memo return). Only a RESERVED item can be released.
 export async function releaseItem(id: string, changedById: string): Promise<UpdateItemResult> {
   const item = await prisma.inventoryItem.findUnique({ where: { id }, select: { status: true } });
   if (!item) return { ok: false, error: "Inventory item not found" };

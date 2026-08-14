@@ -18,9 +18,6 @@ async function loadClientDto(id: string): Promise<ImsClient> {
   return prismaClientToDto(c);
 }
 
-// Mirrors the admin's clientMarkupsSet: a portal signup lands with all three
-// markups at 0, and approval is blocked until staff set them (else the portal
-// would price at cost). All three must be > 0.
 function markupsSet(c: {
   gemstoneMarkupPct: Prisma.Decimal;
   labDiamondMarkupPct: Prisma.Decimal;
@@ -33,10 +30,6 @@ function markupsSet(c: {
   );
 }
 
-// Manually add a back-office client (admin "New client"). A staff-added account
-// lands ACTIVE — portal self-signups take the portal auth path and land PENDING,
-// then run through the lifecycle below. Only name is required; the rest use
-// schema defaults when omitted.
 export async function createClient(input: ImsCreateClient): Promise<ClientMutationResult> {
   const created = await prisma.company.create({
     data: {
@@ -61,9 +54,6 @@ export async function createClient(input: ImsCreateClient): Promise<ClientMutati
   return { ok: true, client: prismaClientToDto(created) };
 }
 
-// Patch a client's account fields + the staff internalNotes. clientStatus is not
-// touched here — approval moves only through transitionClientStatus. An absent
-// key is left unchanged; an explicit null clears a nullable field.
 export async function updateClient(
   id: string,
   input: ImsUpdateClient
@@ -94,9 +84,6 @@ export async function updateClient(
   return { ok: true, client: await loadClientDto(id) };
 }
 
-// The allowed lifecycle moves (admin #0045). Each verb names both its legal
-// source state(s) and its destination — the API is the source of truth, so an
-// out-of-state call is rejected rather than relying on the UI to gate it.
 const TRANSITIONS: Record<ClientLifecycleAction, { from: ClientStatus[]; to: ClientStatus }> = {
   approve: { from: ["PENDING"], to: "ACTIVE" },
   decline: { from: ["PENDING"], to: "DECLINED" },
@@ -104,8 +91,6 @@ const TRANSITIONS: Record<ClientLifecycleAction, { from: ClientStatus[]; to: Cli
   reactivate: { from: ["DEACTIVATED"], to: "ACTIVE" }
 };
 
-// Move a client through its approval lifecycle. Validates the (current → action)
-// pair, and — for approve only — requires the portal markups to be set first.
 export async function transitionClientStatus(
   id: string,
   action: ClientLifecycleAction

@@ -1,13 +1,3 @@
-// Manual Skylab API tool (WORKPLAN §1.6). Run on the DEV database only.
-//
-//   npm run skylab:fetch       # pull the API, print status/shape distributions +
-//                              # a sample normalized row (verify the mapping +
-//                              # discover the real lot_status / shape vocabulary)
-//   npm run skylab:reconcile   # compare the API against the DB Skylab rows,
-//                              # read-only (the parallel-run validation report)
-//
-// Neither command writes to the live table. Use these during the ~2-week parallel
-// run to confirm the API data before flipping SKYLAB_SOURCE=api.
 
 import { prisma } from "@/db";
 import { fetchSkylabStock } from "@/integrations/inventory/skylab-api";

@@ -3,36 +3,6 @@ import type { ImsInboundItemInput, ImsParseInboundCsvResult } from "@/contract";
 
 import { remainingOf, round3 } from "./parcel";
 
-// ── Restock: receiving more of a SKU that is already in stock ────────────────
-//
-// Jennifer 2026-08-03: "having the same SKU should not generally stop a new
-// import, since it's possible that we may buy more of the same SKU in the
-// future. The new carat weight should just be added to what's already in stock."
-//
-// This is the third movement primitive, alongside DRAW and REVERSE in ./parcel.
-// Where those move stock OUT, this puts more IN — and like them it is pure, so
-// every row can be validated before a transaction opens and the whole document
-// rejected atomically.
-//
-// What a restock is NOT: a way to edit an item. Grade fields (shape, colour,
-// clarity, cert, measurements) are what the SKU MEANS, so an incoming row never
-// rewrites them — if they differ, the goods are not the same goods and the SKU
-// is wrong. Only quantities, cost and the price list move.
-//
-// Rules, deliberately narrow:
-//   1. Only a PARCEL tops up. A SINGLE or a PAIR is one identified stone, often
-//      with its own cert number; "more of it" cannot exist, and folding two
-//      certs into one row would destroy both records.
-//   2. Jewelry and other materials top up by piece count — five more of the same
-//      finding is genuinely more of the same finding.
-//   3. Item type must match. Same SKU on a stone and a ring is a data error, not
-//      a restock.
-//   4. Cost per carat is re-averaged by weight. Two purchases at different
-//      prices leave one blended cost, which is what the stock is now worth.
-//   5. Selling prices (wholesale/retail per carat) take the INCOMING value when
-//      the sheet supplies one — the newest purchase carries the current list —
-//      and keep the existing value when it does not.
-
 const EPS = 1e-6;
 
 type StoneRow = {
@@ -45,7 +15,6 @@ type StoneRow = {
   retailPricePerCt: Prisma.Decimal | null;
 };
 
-// Jewelry carries a retail price per piece; other materials do not (schema).
 type JewelryRow = {
   quantity: number;
   productionCost: Prisma.Decimal;
@@ -71,10 +40,6 @@ export type ExistingItem = {
   material: MaterialRow | null;
 };
 
-// The detail-table update plus what this receipt actually brought in. The
-// received figures — not the new totals — are what goes on the bill line: the
-// vendor is invoicing us for the carats that arrived, not for the lot we already
-// owned.
 export type RestockPlan = {
   itemId: string;
   sku: string;
@@ -98,9 +63,6 @@ function num(value: Prisma.Decimal | number | null | undefined): number | null {
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
-// Blend two per-unit rates by the amount each covers. Either side may be
-// unpriced: one known rate is better information than none, so it carries, and
-// only two unknowns give an unknown.
 function blendRate(
   existingRate: number | null,
   existingAmount: number,
@@ -115,15 +77,10 @@ function blendRate(
   return round2((existingRate * existingAmount + incomingRate * incomingAmount) / total);
 }
 
-// A count is only meaningful when BOTH sides have one. Melee bought by weight
-// alone is a supported shape, and inventing a piece count for it — or silently
-// dropping the count we do have onto a lot of unknown size — would both be lies.
 function addCounts(a: number | null, b: number | null): number | null {
   return a === null || b === null ? null : a + b;
 }
 
-// `undefined` means the sheet had no such column; `null` means it was explicitly
-// blank. Neither should overwrite a price we already hold.
 function incoming<T>(value: T | null | undefined, existing: T | null): T | null {
   return value === undefined || value === null ? existing : value;
 }
@@ -163,9 +120,6 @@ export function resolveRestock(existing: ExistingItem, input: ImsInboundItemInpu
     const remainingCt = round3(stock.ct + incomingCt);
     const remainingQty = addCounts(stock.qty, incomingQty);
 
-    // Re-average cost over the ORIGINAL lot sizes, not the remaining balance:
-    // cost is what we paid for the goods, and carats already sold were bought at
-    // the old rate. Selling prices are a list, not an average — newest wins.
     const costPerCt = blendRate(
       num(existing.stone.costPerCt),
       existingCt,
@@ -290,10 +244,6 @@ export function resolveRestock(existing: ExistingItem, input: ImsInboundItemInpu
   };
 }
 
-// Annotate a dry-run parse with what each row will do to stock that already
-// exists. Reads only — the point is that the preview tells the truth about a
-// restock BEFORE the import is committed, which is the gap that made a rejected
-// import look like a clean one (Jennifer 2026-08-03).
 export async function annotateRestocks(
   result: ImsParseInboundCsvResult,
   receivingVendorId: string | null
@@ -313,8 +263,6 @@ export async function annotateRestocks(
     const existing = bySku.get(row.sku);
     if (!existing) return row;
 
-    // Surface an impossible merge here rather than letting the whole document
-    // fail at save — one bad row becomes one skipped row.
     const resolved = resolveRestock(existing, row.item);
     if (!resolved.ok) {
       return { ...row, ok: false, error: resolved.error, item: null, restock: null };
@@ -352,8 +300,6 @@ export async function annotateRestocks(
   };
 }
 
-// Everything the create path needs to read off an existing item to plan a
-// restock. Kept next to the resolver so the two cannot drift.
 export const RESTOCK_ITEM_SELECT = {
   id: true,
   sku: true,

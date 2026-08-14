@@ -151,9 +151,6 @@ function decimalToNumber(value: PrismaRequestItem["snapshotPriceUsd"]): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-// Older request snapshots predate the stored `vendor` key. Derive it from the
-// data they do carry: gemstones come from the Fantasy GEMSSTOCK feed (RADIIA),
-// diamonds map 1:1 — Lab → Skylab, Natural → Disons.
 function resolveVendorFallback(payload: Record<string, unknown>): string {
   if (stringFromPayload(payload, "category") === "diamond") {
     const origin = stringFromPayload(payload, "origin");

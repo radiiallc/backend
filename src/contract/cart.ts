@@ -1,11 +1,5 @@
 import { z } from "zod";
 
-// ────────────────────────────────────────────────────────────────────────────
-// Cart wire contract. Cart line/preview DTOs and the mutation request bodies
-// shared by apps/api (the REST cart routes) and apps/portal (the client that
-// calls them, replacing the pre-split server actions).
-// ────────────────────────────────────────────────────────────────────────────
-
 export const CartLineSchema = z.object({
   cartItemId: z.string(),
   itemId: z.string(),
@@ -59,10 +53,8 @@ export type CartPreview = z.infer<typeof CartPreviewSchema>;
 export const CartCountSchema = z.object({ count: z.number() });
 export type CartCount = z.infer<typeof CartCountSchema>;
 
-// Mirrors the pre-split server-action return; mutation routes echo this body.
 export type CartActionResult = { ok: true } | { ok: false; error: string };
 
-// ── Mutation request bodies ─────────────────────────────────────────────────
 export const AddToCartBodySchema = z.object({
   itemId: z.string().min(1),
   qty: z.number().int().optional()

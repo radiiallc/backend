@@ -1,6 +1,3 @@
-// Restock smoke — receiving more of a SKU already in stock adds to the balance
-// instead of colliding. Runs against radiia_dev at the service layer.
-// Run: npm run smoke:restock
 import { prisma } from "@/db";
 import { createInboundDocument, createOutboundDocument } from "@/modules/ims/documents.service";
 import type { ImsInboundItemInput } from "@/contract";
@@ -61,8 +58,6 @@ function parcel(sku: string, weightCt: number, over: Partial<Record<string, unkn
 
 const SKUS = ["SMOKE-RS-1", "SMOKE-RS-2", "SMOKE-RS-3", "SMOKE-RS-SINGLE"];
 
-// Run at both ends: at the start so a crashed previous run can't poison this
-// one, and at the end so dev inventory isn't left with smoke fixtures in it.
 async function cleanup(): Promise<number> {
   const stale = await prisma.inventoryItem.findMany({
     where: { sku: { in: SKUS } },
@@ -95,14 +90,12 @@ async function main(): Promise<void> {
     create: { name: "SMOKE Restock Vendor B" },
     update: {}
   });
-  // Company.name is not unique — find, then create if absent.
   const client =
     (await prisma.company.findFirst({ where: { name: "SMOKE Restock Client" } })) ??
     (await prisma.company.create({ data: { name: "SMOKE Restock Client" } }));
 
   await cleanup();
 
-  // ── 1. first receipt: plain create ────────────────────────────────────────
   console.log("\n1. first receipt");
   const first = await createInboundDocument(
     { type: "BILL_IN", vendorId: vendorA.id, items: [parcel("SMOKE-RS-1", 10)] },
@@ -114,7 +107,6 @@ async function main(): Promise<void> {
   check("remaining = 10 ct", s.remainingCt === 10, s);
   check("qty = 100", s.quantity === 100, s);
 
-  // ── 2. restock the same SKU ───────────────────────────────────────────────
   console.log("\n2. restock same SKU (used to be a hard error)");
   const second = await createInboundDocument(
     {
@@ -129,7 +121,6 @@ async function main(): Promise<void> {
   check("lot grew to 15 ct", s.weightCt === 15, s);
   check("remaining grew to 15 ct", s.remainingCt === 15, s);
   check("qty summed to 200", s.quantity === 200, s);
-  // (10 × 100 + 5 × 200) / 15 = 133.33
   check("cost re-averaged to 133.33", s.costPerCt === 133.33, s);
   check("newest list price wins (300)", s.wholesalePricePerCt === 300, s);
   check("totalCost = 15 × 133.33", s.totalCost === 1999.95, s);
@@ -137,7 +128,6 @@ async function main(): Promise<void> {
   const onlyOne = await prisma.inventoryItem.count({ where: { sku: "SMOKE-RS-1" } });
   check("still exactly one row for the SKU", onlyOne === 1, { onlyOne });
 
-  // The bill records what ARRIVED, not the new total.
   if (second.ok) {
     const doc = await prisma.document.findUniqueOrThrow({
       where: { id: second.document.id },
@@ -147,7 +137,6 @@ async function main(): Promise<void> {
     check("line priced at the new cost (5 × 200)", n(doc.lineItems[0].totalPrice) === 1000, doc.lineItems[0]);
   }
 
-  // ── 3. restock preserves a drawn-down balance ─────────────────────────────
   console.log("\n3. restock after a partial sale");
   await createInboundDocument(
     { type: "BILL_IN", vendorId: vendorA.id, items: [parcel("SMOKE-RS-2", 20)] },
@@ -175,7 +164,6 @@ async function main(): Promise<void> {
   check("lot 20 -> 26", s2b.weightCt === 26, s2b);
   check("balance 12 -> 18 (sold carats stay sold)", s2b.remainingCt === 18, s2b);
 
-  // ── 4. a sold-out lot comes back ──────────────────────────────────────────
   console.log("\n4. restocking a SOLD-out lot");
   await createInboundDocument(
     { type: "BILL_IN", vendorId: vendorA.id, items: [parcel("SMOKE-RS-3", 4)] },
@@ -203,7 +191,6 @@ async function main(): Promise<void> {
   });
   check("SOLD -> IN_STOCK audited against the bill", audit !== null && audit.documentId !== null);
 
-  // ── 5. guards ─────────────────────────────────────────────────────────────
   console.log("\n5. guards");
   const single = await createInboundDocument(
     {
@@ -277,11 +264,9 @@ async function main(): Promise<void> {
     typeClash.ok ? "accepted" : typeClash.error
   );
 
-  // Nothing partially written by the three rejected documents.
   const afterGuards = await stone("SMOKE-RS-1");
   check("rejected uploads wrote nothing", afterGuards.weightCt === 15, afterGuards);
 
-  // ── 6. carat-only melee keeps an honest piece count ───────────────────────
   console.log("\n6. weight-without-piece-count");
   const noQty = await createInboundDocument(
     {

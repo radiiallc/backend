@@ -3,13 +3,8 @@ import type { CookieOptions } from "express";
 
 import { env } from "../../env";
 
-// Issued-session model (D8): a signed JWT in an httpOnly cookie scoped to
-// .radiia.co so apps/portal + apps/admin share it. HS256 with AUTH_SECRET —
-// the same secret NextAuth used — verifiable in edge runtimes via jose, so the
-// portal's edge middleware can validate without a DB round-trip.
-
 export const SESSION_COOKIE = "radiia_session";
-const SESSION_TTL_SEC = 30 * 24 * 60 * 60; // 30 days (matches the prior NextAuth default)
+const SESSION_TTL_SEC = 30 * 24 * 60 * 60;
 
 const secretKey = new TextEncoder().encode(env.authSecret);
 

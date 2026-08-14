@@ -41,20 +41,17 @@ import {
 
 export const adminRouter = Router();
 
-// Every admin route requires the ADMIN role (401 unauth / 403 non-admin).
 adminRouter.use(requireAdmin);
 
 function wrap(handler: (req: Request, res: Response) => Promise<unknown>) {
   return (req: Request, res: Response): void => {
     handler(req, res).catch((err) => {
-      // eslint-disable-next-line no-console
       console.error("[admin] handler error", err);
       if (!res.headersSent) res.status(500).json({ error: "Internal error" });
     });
   };
 }
 
-// ── Reads ───────────────────────────────────────────────────────────────────
 adminRouter.get("/kpis", wrap(async (_req, res) => res.json(await getDashboardKpisFromDb())));
 
 adminRouter.get("/accounts", wrap(async (_req, res) => res.json(await listAccountsFromDb())));
@@ -113,7 +110,6 @@ adminRouter.get(
   wrap(async (_req, res) => res.json(await getRecentPendingSignups()))
 );
 
-// ── Account actions ─────────────────────────────────────────────────────────
 adminRouter.post(
   "/accounts/:id/approve",
   wrap(async (req, res) => res.json(await approveAccount(req.params.id)))
@@ -138,7 +134,6 @@ adminRouter.post(
   wrap(async (req, res) => res.json(await deactivateAccount(req.params.id)))
 );
 
-// ── Company actions ─────────────────────────────────────────────────────────
 adminRouter.patch(
   "/companies/:id/markups",
   wrap(async (req, res) => {
@@ -163,7 +158,6 @@ adminRouter.patch(
   })
 );
 
-// ── Request-item actions ────────────────────────────────────────────────────
 adminRouter.post(
   "/request-items/:itemId/approve",
   wrap(async (req, res) => res.json(await approveRequestItem(req.params.itemId)))
@@ -179,7 +173,6 @@ adminRouter.post(
   wrap(async (req, res) => res.json(await setRequestItemPending(req.params.itemId)))
 );
 
-// ── Request actions ─────────────────────────────────────────────────────────
 adminRouter.patch(
   "/requests/:id/external-note",
   wrap(async (req, res) => {
@@ -197,14 +190,11 @@ adminRouter.post(
   wrap(async (req, res) => res.json(await completeRequestReview(req.params.id)))
 );
 
-// Decline & close (#0036) — deny every remaining item + finalize the review.
 adminRouter.post(
   "/requests/:id/decline",
   wrap(async (req, res) => res.json(await declineRequest(req.params.id)))
 );
 
-// Convert an approved request into a Memo Out / Invoice (#0035, Option A). The
-// creating admin comes from the session (requireAdmin guarantees req.user).
 adminRouter.post(
   "/requests/:id/convert",
   wrap(async (req, res) => {
@@ -221,7 +211,6 @@ adminRouter.post(
   })
 );
 
-// Add owned inventory items to a request as dealer-offered substitutes (#0038).
 adminRouter.post(
   "/requests/:id/substitutes",
   wrap(async (req, res) => {
@@ -239,7 +228,6 @@ adminRouter.post(
   })
 );
 
-// Remove a dealer-added substitute line.
 adminRouter.delete(
   "/request-items/:itemId",
   wrap(async (req, res) => {

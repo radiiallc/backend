@@ -12,11 +12,6 @@ import {
   type SubmittedRequestItem
 } from "../../integrations/email";
 
-// Port of the portal's submitRequest server action. The auth()/session lookup
-// and BUYER/ADMIN role gate move to the route layer (userId passed in); the
-// revalidatePath cache hints are dropped (the Next portal re-fetches). All DB
-// work, markup math, snapshot capture, cart consumption, and email behavior is
-// unchanged.
 export async function submitRequest(
   userId: string,
   input: SubmitRequestInput
@@ -102,10 +97,6 @@ export async function submitRequest(
         let totalUsd = 0;
 
         for (const ci of selectedItems) {
-          // Every catalog item is a unique, one-of-a-kind stone (see
-          // cart.service.ts), so a request line is always qty 1. Ignore any
-          // legacy qty > 1 a cart line may still carry from before the fix, so a
-          // stale cart cannot submit a line total that is double its true value.
           const qty = 1;
           if (ci.gemstone) {
             const gem = ci.gemstone;

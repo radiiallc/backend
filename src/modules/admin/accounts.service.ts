@@ -8,10 +8,6 @@ import {
   type AccountSettingsChanges
 } from "../../integrations/email";
 
-// Port of the portal admin account actions. requireAdmin() + revalidatePath are
-// handled at the route layer (requireAdmin middleware); validation, status
-// transitions, and approval/decline emails are unchanged.
-
 export async function approveAccount(userId: string): Promise<AdminActionResult> {
   if (!userId) return { ok: false, error: "Missing userId" };
 
@@ -98,11 +94,6 @@ export async function deactivateAccount(userId: string): Promise<AdminActionResu
   return { ok: true };
 }
 
-// Updates an account's pricing settings (credit limit + the three markups) and,
-// for any field that actually changed, notifies production@radiia.co. A null
-// input means "clear to 0", matching how markups have always been stored. The
-// notification is best-effort: if it fails the save still succeeds and we return
-// a warning, mirroring the approve/decline flows.
 export async function updateCompanyMarkups(
   companyId: string,
   markups: MarkupUpdateBody
@@ -129,8 +120,6 @@ export async function updateCompanyMarkups(
     labDiamondMarkupPct: markups.labDiamondMarkupPct ?? 0
   };
 
-  // Diff against current values (Prisma Decimals -> numbers) so the email lists
-  // only the fields that genuinely changed.
   const changes: AccountSettingsChanges = {};
   if (Number(existing.creditLimitUsd) !== next.creditLimitUsd) {
     changes.creditLimitUsd = next.creditLimitUsd;

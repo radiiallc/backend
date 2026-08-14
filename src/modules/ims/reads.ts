@@ -18,8 +18,6 @@ import {
   prismaVocabToDto
 } from "./mappers";
 
-// ── Inventory ─────────────────────────────────────────────────────────────────
-
 function buildInventoryWhere(query: ImsInventoryQuery): Prisma.InventoryItemWhereInput {
   const where: Prisma.InventoryItemWhereInput = {};
   if (query.type) where.itemType = query.type;
@@ -49,8 +47,6 @@ export async function getInventoryItemByIdFromDb(id: string): Promise<ImsInvento
   return item ? prismaItemToDto(item) : null;
 }
 
-// ── Vendors ───────────────────────────────────────────────────────────────────
-
 export async function listVendorsFromDb(): Promise<ImsVendor[]> {
   const vendors = await prisma.vendor.findMany({
     include: IMS_VENDOR_INCLUDE,
@@ -67,8 +63,6 @@ export async function getVendorByIdFromDb(id: string): Promise<ImsVendor | null>
   return vendor ? prismaVendorToDto(vendor) : null;
 }
 
-// ── Vocabulary ────────────────────────────────────────────────────────────────
-
 export async function listVocabularyFromDb(kind?: string): Promise<ImsVocabularyValue[]> {
   const values = await prisma.vocabularyValue.findMany({
     where: kind ? { kind } : undefined,
@@ -76,8 +70,6 @@ export async function listVocabularyFromDb(kind?: string): Promise<ImsVocabulary
   });
   return values.map(prismaVocabToDto);
 }
-
-// ── Clients ───────────────────────────────────────────────────────────────────
 
 function buildClientWhere(query: ImsClientQuery): Prisma.CompanyWhereInput {
   const where: Prisma.CompanyWhereInput = {};
@@ -93,7 +85,6 @@ export async function listClientsFromDb(query: ImsClientQuery): Promise<ImsClien
   const clients = await prisma.company.findMany({
     where: buildClientWhere(query),
     include: IMS_CLIENT_INCLUDE,
-    // Most recent signup first — the admin surfaces new PENDING accounts to review.
     orderBy: { createdAt: "desc" }
   });
   return clients.map(prismaClientToDto);

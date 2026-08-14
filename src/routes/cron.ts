@@ -5,9 +5,6 @@ import { runUnifiedIngest } from "../integrations/inventory/diamond-ingest";
 
 export const cronRouter = Router();
 
-// Gate §6 — cron auth never falls open: empty/missing CRON_SECRET => 401, not 200.
-// Accepts `Authorization: Bearer <secret>` or `?secret=<secret>` (ported verbatim
-// from the portal cron route).
 function authorized(req: Request): boolean {
   const secret = env.cronSecret;
   if (!secret) return false;
@@ -25,7 +22,6 @@ async function handle(req: Request, res: import("express").Response): Promise<vo
   res.status(result.status === "error" ? 500 : 200).json(result);
 }
 
-// Unified RapNet ingest (all 3 feeds). `/gemstones` is the legacy alias.
 cronRouter.get("/ingest/diamonds", handle);
 cronRouter.post("/ingest/diamonds", handle);
 cronRouter.get("/ingest/gemstones", handle);

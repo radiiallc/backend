@@ -8,8 +8,6 @@ import type { SkylabStone } from "./skylab-api";
 const REJECT_NON_STOCK_STATUS = "non-stock-status";
 const REJECT_NO_FEED_ROW_ID = "no-feed-row-id";
 
-// --- scalar coercion --------------------------------------------------------
-
 function num(value: string | number | null | undefined): number | null {
   if (value === null || value === undefined) return null;
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
@@ -25,8 +23,6 @@ function str(value: string | number | null | undefined): string | null {
   return s === "" ? null : s;
 }
 
-// --- availability -----------------------------------------------------------
-
 export function skylabLotStatus(stone: SkylabStone): string {
   return (str(stone.lot_status) ?? "").toUpperCase();
 }
@@ -34,8 +30,6 @@ export function skylabLotStatus(stone: SkylabStone): string {
 export function isSkylabAvailable(stone: SkylabStone): boolean {
   return env.skylabAvailableStatuses.includes(skylabLotStatus(stone));
 }
-
-// --- colour (white grade vs. fancy) -----------------------------------------
 
 const WHITE_COLOR_RE = /^[D-Z](?:\s*-\s*[D-Z])?$/;
 
@@ -91,8 +85,6 @@ function splitColor(raw: string | null): {
   return { colorWhite: null, fancyColor: color, fancyIntensity: intensity };
 }
 
-// --- media + cert -----------------------------------------------------------
-
 function httpUrlOrNull(raw: string | null): string | null {
   if (!raw) return null;
   try {
@@ -118,8 +110,6 @@ function pickMedia(stone: SkylabStone): { photoUrl: string | null; videoUrl: str
 
   return { photoUrl, videoUrl };
 }
-
-// --- row mapping ------------------------------------------------------------
 
 type MapResult =
   | { ok: true; row: ParsedDiamond }

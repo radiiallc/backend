@@ -167,9 +167,6 @@ function applyGemstonePriceFilter(
   where.AND = [...andList, { basePriceUsd: priceCondition }];
 }
 
-// Only the columns the GemstoneCard mapping reads. EXCLUDES `rawFeedRow` (the full
-// raw-feed JSON blob per row) and other unused columns so list queries stay light
-// on Disk IO. Keep in sync with the `rows.map(...)` projection below.
 const GEMSTONE_CARD_SELECT = {
   id: true,
   sku: true,

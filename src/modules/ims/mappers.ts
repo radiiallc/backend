@@ -15,9 +15,6 @@ import type {
   ImsVocabularyValue
 } from "@/contract";
 
-// The relation set every inventory DTO needs. Exported so reads.ts and the
-// mapper agree on the exact payload shape (parties for display names, all three
-// detail tables, exactly one of which is non-null per itemType).
 export const IMS_ITEM_INCLUDE = {
   vendor: { select: { name: true } },
   brandOwner: { select: { name: true } },
@@ -31,15 +28,12 @@ type PrismaItemWithRelations = Prisma.InventoryItemGetPayload<{
   include: typeof IMS_ITEM_INCLUDE;
 }>;
 
-// Vendors carry a derived inventory count + an open-document count (the admin's
-// "N open"), both single-query filtered relation counts.
 export const IMS_VENDOR_INCLUDE = {
   _count: { select: { inventoryItems: true, documents: { where: { status: "OPEN" } } } }
 } satisfies Prisma.VendorInclude;
 
 type PrismaVendorWithCount = Prisma.VendorGetPayload<{ include: typeof IMS_VENDOR_INCLUDE }>;
 
-// Prisma Decimal | null → number | null (the wire carries plain numbers).
 function decOrNull(value: Prisma.Decimal | null): number | null {
   if (value === null || value === undefined) return null;
   const n = Number(value.toString());
@@ -73,7 +67,6 @@ function prismaStoneToDetail(s: PrismaStoneDetail): ImsStoneDetail {
     ratio: decOrNull(s.ratio),
     lab: s.lab,
     certNumber: s.certNumber,
-    // certUrl is server-read-only: expose only its presence, never the URL.
     hasCert: Boolean(s.certUrl),
     origin: s.origin,
     treatment: s.treatment,
@@ -129,8 +122,6 @@ function prismaOtherToDetail(m: PrismaOtherMaterialDetail): ImsOtherMaterialDeta
   };
 }
 
-// The three detail tables all carry photo1/photo2/video; the media summary is
-// derived from whichever detail row is present.
 function mediaSummary(
   detail: { photo1Url: string | null; photo2Url: string | null; videoUrl: string | null } | null
 ): { photoCount: number; hasVideo: boolean } {
@@ -193,10 +184,6 @@ export function prismaVocabToDto(v: PrismaVocabularyValue): ImsVocabularyValue {
   return { id: v.id, kind: v.kind, value: v.value };
 }
 
-// ── Clients (back-office accounts) ───────────────────────────────────────────
-
-// A client carries a derived count of open documents held against it (the
-// admin's "open: N"). Filtered relation count keeps it a single query.
 export const IMS_CLIENT_INCLUDE = {
   _count: { select: { clientDocuments: { where: { status: "OPEN" } } } }
 } satisfies Prisma.CompanyInclude;
@@ -213,7 +200,6 @@ export function prismaClientToDto(c: PrismaClientWithCount): ImsClient {
     website: c.website,
     shippingAddress: c.shippingAddress,
     clientStatus: c.clientStatus,
-    // Non-nullable Decimals (schema defaults 0) → plain numbers.
     creditLimitUsd: decOrNull(c.creditLimitUsd) ?? 0,
     gemstoneMarkupPct: decOrNull(c.gemstoneMarkupPct) ?? 0,
     labDiamondMarkupPct: decOrNull(c.labDiamondMarkupPct) ?? 0,

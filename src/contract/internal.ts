@@ -1,12 +1,4 @@
-// Internal (service-to-service) wire types for the secret-gated /internal API
-// surface. These back the portal's public/feed/proxy routes (share page, Sherry
-// CSV feed, cert proxy, keep-warm) that have no buyer session — the portal calls
-// them server-side with the shared INTERNAL_API_SECRET. They deliberately never
-// expose vendor `certUrl` (Gate §8): the cert proxy streams the file, and feed
-// rows carry a `hasCert` boolean instead of the URL.
 
-// One stone for the public /share selection page (resolved media, no prices —
-// share prices come from the URL token, not the DB; no certUrl).
 export type ShareItem = {
   id: string;
   sku: string;
@@ -23,9 +15,6 @@ export type ShareItem = {
   videoUrl: string | null;
 };
 
-// One diamond row for the Sherry outbound CSV feed. Mirrors the feed's prior
-// Prisma select, but `certUrl` is replaced by `hasCert` — the portal builds the
-// same-domain cert proxy URL from `id` when `hasCert` is true.
 export type FeedDiamond = {
   id: string;
   vendor: string;

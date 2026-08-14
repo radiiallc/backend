@@ -1,10 +1,6 @@
 import { prisma } from "@/db";
 import type { FavoriteActionResult, FavoriteBulkResult } from "@/contract";
 
-// Port of the portal favorites mutations, parameterized by the authenticated
-// userId (the route enforces auth + BUYER/ADMIN). revalidatePath dropped;
-// polymorphic gemstone-XOR-diamond resolution and idempotent add are unchanged.
-
 async function resolveFavoriteData(
   itemId: string
 ): Promise<{ gemstoneId: string } | { diamondId: string } | null> {
