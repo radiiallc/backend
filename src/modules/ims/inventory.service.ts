@@ -8,6 +8,7 @@ import type {
 } from "@/contract";
 
 import { IMS_ITEM_INCLUDE, prismaItemToDto } from "./mappers";
+import { jewelryOpeningBalance } from "./jewelry-lot";
 import { parcelOpeningBalance, rebaseUntouchedParcel, resolveAdjust } from "./parcel";
 
 export type CreateItemResult =
@@ -109,7 +110,11 @@ export function buildInboundItemCreateData(
     };
   }
   if (input.itemType === "JEWELRY") {
-    return { ...core, jewelry: { create: { ...input.jewelry } } };
+    const j = input.jewelry;
+    return {
+      ...core,
+      jewelry: { create: { ...j, remainingQty: jewelryOpeningBalance(j.quantity) } }
+    };
   }
   return { ...core, material: { create: { ...input.material } } };
 }
@@ -204,7 +209,13 @@ export async function createInventoryItem(
       stone: { create: { ...s, ...totals, ...parcelOpeningBalance(input.itemSubtype, s) } }
     };
   } else if (input.itemType === "JEWELRY") {
-    detail = { ...core, sku: "", jewelry: { create: { ...input.jewelry } } };
+    detail = {
+      ...core,
+      sku: "",
+      jewelry: {
+        create: { ...input.jewelry, remainingQty: jewelryOpeningBalance(input.jewelry.quantity) }
+      }
+    };
   } else {
     detail = { ...core, sku: "", material: { create: { ...input.material } } };
   }

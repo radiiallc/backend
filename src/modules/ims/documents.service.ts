@@ -20,6 +20,13 @@ import {
 } from "./documents.constants";
 import { IMS_DOC_INCLUDE, prismaDocToDto } from "./documents.mappers";
 import { buildInboundItemCreateData, mintSkuBatch } from "./inventory.service";
+import {
+  matchesJewelryMemoSlice,
+  remainingPieces,
+  resolveJewelryDraw,
+  resolveJewelrySettle,
+  reverseJewelryDraw
+} from "./jewelry-lot";
 import { matchesMemoSlice, type ResolvedDraw, resolveDraw, resolveSettle, reverseDraw } from "./parcel";
 import {
   type ExistingItem,
@@ -74,6 +81,13 @@ function num(value: Prisma.Decimal | null): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/** A jewelry/material unit price is per PIECE, so a line of 3 is worth 3x it. */
+function extend(unitPrice: number | null, quantity: number | null): number | null {
+  if (unitPrice === null) return null;
+  const qty = quantity ?? 1;
+  return Math.round(unitPrice * qty * 100) / 100;
+}
+
 function priceSnapshot(
   item: ItemWithDetails,
   draw?: { drawCt: number | null; drawQty: number | null }
@@ -98,11 +112,13 @@ function priceSnapshot(
   }
   if (item.jewelry) {
     const price = num(item.jewelry.wholesalePrice);
-    return { quantity: item.jewelry.quantity, caratWeight: null, unitPrice: price, totalPrice: price };
+    const qty = draw?.drawQty ?? remainingPieces(item.jewelry);
+    return { quantity: qty, caratWeight: null, unitPrice: price, totalPrice: extend(price, qty) };
   }
   if (item.material) {
     const price = num(item.material.wholesalePrice);
-    return { quantity: item.material.quantity, caratWeight: null, unitPrice: price, totalPrice: price };
+    const qty = item.material.quantity;
+    return { quantity: qty, caratWeight: null, unitPrice: price, totalPrice: extend(price, qty) };
   }
   return { quantity: null, caratWeight: null, unitPrice: null, totalPrice: null };
 }
@@ -124,11 +140,13 @@ function costSnapshot(item: ItemWithDetails): {
   }
   if (item.jewelry) {
     const cost = num(item.jewelry.productionCost);
-    return { quantity: item.jewelry.quantity, caratWeight: null, unitPrice: cost, totalPrice: cost };
+    const qty = item.jewelry.quantity;
+    return { quantity: qty, caratWeight: null, unitPrice: cost, totalPrice: extend(cost, qty) };
   }
   if (item.material) {
     const cost = num(item.material.cost);
-    return { quantity: item.material.quantity, caratWeight: null, unitPrice: cost, totalPrice: cost };
+    const qty = item.material.quantity;
+    return { quantity: qty, caratWeight: null, unitPrice: cost, totalPrice: extend(cost, qty) };
   }
   return { quantity: null, caratWeight: null, unitPrice: null, totalPrice: null };
 }
@@ -146,10 +164,12 @@ function detailCostSnapshot(
   }
   if (kind === "jewelry") {
     const cost = n(detail.productionCost);
-    return { quantity: n(detail.quantity), caratWeight: null, unitPrice: cost, totalPrice: cost };
+    const qty = n(detail.quantity);
+    return { quantity: qty, caratWeight: null, unitPrice: cost, totalPrice: extend(cost, qty) };
   }
   const cost = n(detail.cost);
-  return { quantity: n(detail.quantity), caratWeight: null, unitPrice: cost, totalPrice: cost };
+  const qty = n(detail.quantity);
+  return { quantity: qty, caratWeight: null, unitPrice: cost, totalPrice: extend(cost, qty) };
 }
 
 async function recomputeMemoClose(tx: Prisma.TransactionClient, memoId: string): Promise<void> {
@@ -241,7 +261,8 @@ export async function createOutboundDocument(
     });
     for (const ml of openMemoLines) {
       const item = items.find((i) => i.id === ml.inventoryItemId);
-      if (!item || item.itemSubtype !== "PARCEL") continue;
+      const divisible = item != null && (item.itemSubtype === "PARCEL" || item.itemType === "JEWELRY");
+      if (!item || !divisible) continue;
       if (memoLineByItem.has(ml.inventoryItemId)) {
         return {
           ok: false,
@@ -261,8 +282,19 @@ export async function createOutboundDocument(
   for (const line of lines) {
     const item = byId.get(line.inventoryItemId)!;
     const memoLine = memoLineByItem.get(item.id);
-    const settles = memoLine != null && matchesMemoSlice(memoLine, line);
-    const resolved = settles ? resolveSettle(item, memoLine!, line) : resolveDraw(item, line);
+    const jewelryLot = item.itemType === "JEWELRY" && item.jewelry !== null;
+
+    const settles =
+      memoLine != null &&
+      (jewelryLot ? matchesJewelryMemoSlice(memoLine, line) : matchesMemoSlice(memoLine, line));
+
+    const resolved = jewelryLot
+      ? settles
+        ? resolveJewelrySettle(item, memoLine!)
+        : resolveJewelryDraw(item, line)
+      : settles
+        ? resolveSettle(item, memoLine!, line)
+        : resolveDraw(item, line);
     if (!resolved.ok) return { ok: false, error: resolved.error };
     snapshots.push({
       itemId: item.id,
@@ -319,10 +351,15 @@ export async function createOutboundDocument(
     for (const s of snapshots) {
       const { draw } = s;
 
-      if (draw.remainingAfterCt !== null) {
+      if (draw.lot === "PARCEL" && draw.remainingAfterCt !== null) {
         await tx.stoneDetail.update({
           where: { inventoryItemId: s.itemId },
           data: { remainingCt: draw.remainingAfterCt, remainingQty: draw.remainingAfterQty }
+        });
+      } else if (draw.lot === "JEWELRY" && draw.remainingAfterQty !== null) {
+        await tx.jewelryDetail.update({
+          where: { inventoryItemId: s.itemId },
+          data: { remainingQty: draw.remainingAfterQty }
         });
       }
 
@@ -402,7 +439,7 @@ export async function createOutboundDocument(
 
 type VoidableDoc = Prisma.DocumentGetPayload<{
   include: {
-    lineItems: { include: { inventoryItem: { include: { stone: true } } } };
+    lineItems: { include: { inventoryItem: { include: { stone: true, jewelry: true } } } };
     childDocuments: { select: { id: true } };
   };
 }>;
@@ -423,7 +460,7 @@ export async function voidDocument(
   const doc = await prisma.document.findUnique({
     where: { id: documentId },
     include: {
-      lineItems: { include: { inventoryItem: { include: { stone: true } } } },
+      lineItems: { include: { inventoryItem: { include: { stone: true, jewelry: true } } } },
       childDocuments: { select: { id: true } }
     }
   });
@@ -485,6 +522,11 @@ async function voidOutboundDocument(
         await tx.stoneDetail.update({
           where: { inventoryItemId: item.id },
           data: { remainingCt: restored.remainingCt, remainingQty: restored.remainingQty }
+        });
+      } else if (drewStock && item.itemType === "JEWELRY" && item.jewelry) {
+        await tx.jewelryDetail.update({
+          where: { inventoryItemId: item.id },
+          data: { remainingQty: reverseJewelryDraw(item.jewelry, line.quantity) }
         });
       }
 
@@ -1051,7 +1093,7 @@ export async function recordMemoReturn(
       });
       const item = await tx.inventoryItem.findUniqueOrThrow({
         where: { id: line.inventoryItemId },
-        include: { stone: true }
+        include: { stone: true, jewelry: true }
       });
 
       if (item.itemSubtype === "PARCEL" && item.stone) {
@@ -1059,6 +1101,11 @@ export async function recordMemoReturn(
         await tx.stoneDetail.update({
           where: { inventoryItemId: item.id },
           data: { remainingCt: restored.remainingCt, remainingQty: restored.remainingQty }
+        });
+      } else if (item.itemType === "JEWELRY" && item.jewelry) {
+        await tx.jewelryDetail.update({
+          where: { inventoryItemId: item.id },
+          data: { remainingQty: reverseJewelryDraw(item.jewelry, line.quantity) }
         });
       }
 

@@ -1,6 +1,7 @@
 import { Prisma, prisma } from "@/db";
 import type { ImsInboundItemInput, ImsParseInboundCsvResult } from "@/contract";
 
+import { remainingPieces } from "./jewelry-lot";
 import { remainingOf, round3 } from "./parcel";
 
 const EPS = 1e-6;
@@ -17,6 +18,7 @@ type StoneRow = {
 
 type JewelryRow = {
   quantity: number;
+  remainingQty: number | null;
   productionCost: Prisma.Decimal;
   wholesalePrice: Prisma.Decimal | null;
   retailPrice: Prisma.Decimal | null;
@@ -198,6 +200,7 @@ export function resolveRestock(existing: ExistingItem, input: ImsInboundItemInpu
         stoneUpdate: null,
         jewelryUpdate: {
           quantity: existingQty + incomingQty,
+          remainingQty: remainingPieces(existing.jewelry) + incomingQty,
           productionCost: productionCost ?? existing.jewelry.productionCost,
           wholesalePrice: incoming(input.jewelry.wholesalePrice, num(existing.jewelry.wholesalePrice)),
           retailPrice: incoming(input.jewelry.retailPrice, num(existing.jewelry.retailPrice))
@@ -319,7 +322,13 @@ export const RESTOCK_ITEM_SELECT = {
     }
   },
   jewelry: {
-    select: { quantity: true, productionCost: true, wholesalePrice: true, retailPrice: true }
+    select: {
+      quantity: true,
+      remainingQty: true,
+      productionCost: true,
+      wholesalePrice: true,
+      retailPrice: true
+    }
   },
   material: { select: { quantity: true, cost: true, wholesalePrice: true } }
 } satisfies Prisma.InventoryItemSelect;

@@ -496,7 +496,8 @@ model JewelryDetail {
   jewelryItemType  String
   description      String?
   quantity         Int           @default(1)
-  metal            String
+  remainingQty     Int?
+  metal            String?
   lengthMm         Decimal?      @db.Decimal(10, 3)
   ringSize         String?
   mm               Decimal?      @db.Decimal(10, 3)

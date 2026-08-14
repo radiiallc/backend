@@ -87,6 +87,7 @@ function prismaJewelryToDetail(j: PrismaJewelryDetail): ImsJewelryDetail {
     jewelryItemType: j.jewelryItemType,
     description: j.description,
     quantity: j.quantity,
+    remainingQty: j.remainingQty,
     metal: j.metal,
     lengthMm: decOrNull(j.lengthMm),
     ringSize: j.ringSize,

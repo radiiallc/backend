@@ -46,6 +46,9 @@ export type ResolvedDraw = {
   remainingAfterQty: number | null;
   isPartial: boolean;
   emptied: boolean;
+  /** Which balance the caller must write: a parcel's carats, a jewelry line's
+   *  pieces, or null for an atomic item that has no balance to keep. */
+  lot: "PARCEL" | "JEWELRY" | null;
 };
 
 export type ResolveResult = { ok: true; draw: ResolvedDraw } | { ok: false; error: string };
@@ -70,7 +73,8 @@ export function resolveDraw(item: ParcelItem, requested: DrawRequest): ResolveRe
         remainingAfterCt: null,
         remainingAfterQty: null,
         isPartial: false,
-        emptied: false
+        emptied: false,
+        lot: null
       }
     };
   }
@@ -89,7 +93,8 @@ export function resolveDraw(item: ParcelItem, requested: DrawRequest): ResolveRe
         remainingAfterCt: 0,
         remainingAfterQty: stock.qty === null ? null : 0,
         isPartial: false,
-        emptied: true
+        emptied: true,
+        lot: "PARCEL"
       }
     };
   }
@@ -146,7 +151,8 @@ export function resolveDraw(item: ParcelItem, requested: DrawRequest): ResolveRe
       remainingAfterCt: emptied ? 0 : remainingAfterCt,
       remainingAfterQty: emptied && remainingAfterQty !== null ? 0 : remainingAfterQty,
       isPartial: true,
-      emptied
+      emptied,
+      lot: "PARCEL"
     }
   };
 }
@@ -182,7 +188,8 @@ export function resolveSettle(item: ParcelItem, memo: MemoDraw, requested: DrawR
       remainingAfterCt: null,
       remainingAfterQty: null,
       isPartial: stock.ct > EPS,
-      emptied: stock.ct <= EPS
+      emptied: stock.ct <= EPS,
+      lot: "PARCEL"
     }
   };
 }

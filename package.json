@@ -2,7 +2,7 @@
   "name": "radiia-backend",
   "version": "0.1.0",
   "private": true,
-  "description": "RADIIA standalone backend — Express API + Prisma. Serves the client portal, admin portal, and future portals. Fully independent of any frontend repo.",
+  "description": "RADIIA standalone backend \u2014 Express API + Prisma. Serves the client portal, admin portal, and future portals. Fully independent of any frontend repo.",
   "scripts": {
     "dev": "dotenv -e .env.dev -- tsx watch src/index.ts",
     "dev:prod": "dotenv -e .env.local -- tsx watch src/index.ts",
@@ -27,7 +27,8 @@
     "skylab:fetch": "dotenv -e .env.local -- tsx scripts/skylab-api.ts fetch",
     "skylab:reconcile": "dotenv -e .env.local -- tsx scripts/skylab-api.ts reconcile",
     "smoke:void": "dotenv -e .env.dev -- tsx scripts/void-smoke.ts",
-    "smoke:brandin": "dotenv -e .env.dev -- tsx scripts/brand-in-smoke.ts"
+    "smoke:brandin": "dotenv -e .env.dev -- tsx scripts/brand-in-smoke.ts",
+    "smoke:jewelry": "dotenv -e .env.dev -- tsx scripts/jewelry-lot-smoke.ts"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",
