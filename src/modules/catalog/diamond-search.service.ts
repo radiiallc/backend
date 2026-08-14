@@ -12,11 +12,6 @@ import type {
 
 const DEFAULT_PER_PAGE = 50;
 
-// Only the columns the DiamondCard mapping below actually reads. Critically this
-// EXCLUDES `rawFeedRow` (the full raw-feed JSON blob stored per row) and other
-// unused columns, so list queries don't drag the heaviest data off disk on every
-// page — keeps Disk IO down on the small Supabase compute. Keep in sync with the
-// `rows.map(...)` projection.
 const DIAMOND_CARD_SELECT = {
   id: true,
   sku: true,
@@ -83,10 +78,6 @@ function buildWhere(
       OR: clarities.map((c) => ({ clarity: { equals: c, mode: "insensitive" as const } }))
     });
   }
-  // Cut/polish/symmetry are stored as raw RapNet tokens ("EX", "VG", ...) while
-  // the UI sends human-readable grades. Expand each chosen grade to the stored
-  // tokens it covers and match by equality; fall back to the raw value if a
-  // grade isn't in the map so an unknown choice is never silently dropped.
   const gradeTokens = (values: string[]): string[] =>
     values.flatMap((v) => {
       const tokens = diamondGradeTokensForFilter(v);

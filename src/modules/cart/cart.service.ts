@@ -3,11 +3,6 @@ import type { CartActionResult, CartPreview, CartPreviewLine } from "@/contract"
 
 import { getCartForBuyer, getCartItemCountForUser } from "./reads";
 
-// Cart mutations/reads, parameterized by the authenticated userId (the route
-// layer enforces auth + BUYER/ADMIN role and supplies it). Ported verbatim from
-// the portal's cart server actions, minus the `auth()` session lookup and the
-// `revalidatePath("/cart")` cache hint (the Next portal re-fetches on its own).
-
 export async function getCartCount(userId: string): Promise<number> {
   return getCartItemCountForUser(userId);
 }
@@ -87,13 +82,6 @@ export async function addToCart(
 
   const cartId = await ensureCartId(userId);
 
-  // Every catalog item is a unique, one-of-a-kind stone (parcels are rejected at
-  // ingest), so a cart line is ALWAYS qty 1 — there is no second copy to add.
-  // Re-adding a stone that is already in the cart is therefore a no-op, not a
-  // quantity increment. Incrementing here silently doubled a line's total while
-  // leaving its per-carat price untouched (the per-carat is computed
-  // qty-independently everywhere), so a re-added stone showed 2x its true total
-  // on the submitted request.
   if (resolved.kind === "gemstone") {
     await prisma.cartItem.upsert({
       where: { cartId_gemstoneId: { cartId, gemstoneId: itemId } },
@@ -148,8 +136,6 @@ export async function updateCartItemQty(
     return { ok: false, error: "Item not found" };
   }
 
-  // Unique stones only: a cart line is always qty 1, so ignore any requested
-  // value > 1 rather than let it through and double the line total downstream.
   await prisma.cartItem.update({
     where: { id: cartItemId },
     data: { qty: 1 }

@@ -205,9 +205,6 @@ export async function sendIngestFailureAlert(args: {
   skippedFiles: { name: string; reason: string }[];
   errorText?: string | null;
   repeated: boolean;
-  // Length of the current streak of failed runs. Alerts are held until this
-  // reaches INGEST_ALERT_MIN_CONSECUTIVE_FAILURES, so "2 consecutive runs" in the
-  // body is the reader's signal that this is sustained rather than a one-off blip.
   consecutiveFailures?: number;
 }): Promise<void> {
   const fileLines =
@@ -277,7 +274,6 @@ function formatUsdAmount(value: number): string {
 }
 
 function formatPct(value: number): string {
-  // Drop trailing zeros so 15.00 -> "15", but keep 12.5 -> "12.5".
   return `${Number(value.toFixed(2))}%`;
 }
 
@@ -298,7 +294,6 @@ export async function sendAccountSettingsChangeEmail(args: {
   if (args.changes.gemstoneMarkupPct !== undefined) {
     lines.push(`New gemstones markup: ${formatPct(args.changes.gemstoneMarkupPct)}`);
   }
-  // Nothing actually changed — don't send a meaningless notification.
   if (lines.length === 0) return;
 
   await sendPlainText({
@@ -537,9 +532,6 @@ export async function sendRequestSubmittedAdminNotification(args: {
   const itemLines = args.items.map(formatSubmittedItemLine).join("\n");
   const trimmedNote = args.note?.trim();
   const noteBlock = trimmedNote ? `Note from the client:\n${trimmedNote}\n\n` : "";
-  // Admin memo/invoice request notifications go to BOTH the production inbox and
-  // the inventory inbox. Dedupe so a shared config value can't double-send, and
-  // drop any empty address so a blank env var can't send to "".
   const recipients = Array.from(
     new Set([env.notificationEmail, env.inventoryEmail].filter(Boolean))
   );

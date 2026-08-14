@@ -8,10 +8,6 @@ import type {
   UpdateBuyerProfileBody
 } from "@/contract";
 
-// Port of the portal buyer profile read + edit actions, parameterized by the
-// authenticated userId (route enforces auth). revalidatePath dropped. Edits touch
-// User.phone, Company.shippingAddress, or User.passwordHash independently.
-
 const MIN_PASSWORD_LENGTH = 8;
 
 export async function getBuyerProfile(userId: string): Promise<BuyerProfile | null> {

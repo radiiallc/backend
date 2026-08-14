@@ -1,10 +1,3 @@
-// Void / delete smoke (Jennifer #0049) — the undo for a mistaken document, and
-// the delete for one that should not exist at all. Runs against radiia_dev at
-// the service layer. Run: npm run smoke:void
-//
-// The refusals are the point of this file, not the happy paths: voiding a
-// RECEIPT deletes the stock it created, so every guard that stands between that
-// and a Bill In whose goods have already moved is asserted on its message text.
 import { prisma } from "@/db";
 import {
   createInboundDocument,
@@ -73,8 +66,6 @@ function parcel(sku: string, weightCt: number, over: Record<string, unknown> = {
 
 const PREFIX = "SMOKE-VD-";
 
-// Run at both ends: at the start so a crashed previous run can't poison this
-// one, and at the end so dev inventory isn't left with smoke fixtures in it.
 async function cleanup(): Promise<number> {
   const stale = await prisma.inventoryItem.findMany({
     where: { sku: { startsWith: PREFIX } },
@@ -90,8 +81,6 @@ async function cleanup(): Promise<number> {
       docIds.add(l.documentId);
     }
   }
-  // Voided receipts leave a document with no lines and no items, so they can
-  // only be found by their own reference.
   for (const d of await prisma.document.findMany({
     where: { externalReference: { startsWith: PREFIX } },
     select: { id: true }
@@ -104,7 +93,6 @@ async function cleanup(): Promise<number> {
     await prisma.itemStatusHistory.deleteMany({ where: { inventoryItemId: { in: ids } } });
   }
   if (docList.length > 0) {
-    // Children (returns) first: parentDocumentId is restrict-on-delete.
     await prisma.documentLineItem.deleteMany({ where: { documentId: { in: docList } } });
     await prisma.itemStatusHistory.deleteMany({ where: { documentId: { in: docList } } });
     await prisma.document.deleteMany({ where: { parentDocumentId: { in: docList } } });
@@ -125,8 +113,6 @@ async function main(): Promise<void> {
     create: { name: "SMOKE Void Vendor" },
     update: {}
   });
-  // ACTIVE matters: reserving for an inactive client is refused upstream, and
-  // section 3 needs a real reservation to test against.
   const client =
     (await prisma.company.findFirst({ where: { name: "SMOKE Void Client" } })) ??
     (await prisma.company.create({ data: { name: "SMOKE Void Client", clientStatus: "ACTIVE" } }));
@@ -146,7 +132,6 @@ async function main(): Promise<void> {
     return r.document;
   };
 
-  // ── 1. void a receipt: the stock it created is removed ────────────────────
   console.log("\n1. void a Bill In (happy path)");
   const d1 = await bill("1", [single(PREFIX + "1a"), single(PREFIX + "1b")]);
   check("two items received", (await itemBySku(PREFIX + "1a")) !== null);
@@ -175,7 +160,6 @@ async function main(): Promise<void> {
     v1again.ok ? "accepted" : v1again.error
   );
 
-  // ── 2. refused once the goods have moved ──────────────────────────────────
   console.log("\n2. a receipt whose items have moved cannot be voided");
   const d2 = await bill("2", [single(PREFIX + "2a")]);
   const it2 = await itemBySku(PREFIX + "2a");
@@ -186,8 +170,6 @@ async function main(): Promise<void> {
   check("test sale created", sale.ok, sale.ok ? undefined : sale.error);
   const v2 = await voidDocument(d2.id, user.id);
   check("void refused", !v2.ok, v2.ok ? "accepted" : undefined);
-  // The status guard answers first here (SOLD), which is the more specific of
-  // the two reasons — either way the sentence must name the item and the fix.
   check(
     "refusal names the SKU and the reason",
     !v2.ok && v2.error.includes(PREFIX + "2a") && v2.error.includes("sold"),
@@ -195,27 +177,21 @@ async function main(): Promise<void> {
   );
   check("nothing was deleted", (await itemBySku(PREFIX + "2a")) !== null);
 
-  // ── 3. refused while an item is reserved ──────────────────────────────────
   console.log("\n3. a reserved item blocks the void");
   const d3 = await bill("3", [single(PREFIX + "3a")]);
   const it3 = await itemBySku(PREFIX + "3a");
   const res3 = await reserveItem(it3!.id, client.id, user.id);
   check("reserve ok", res3.ok, res3.ok ? undefined : res3.error);
   const v3 = await voidDocument(d3.id, user.id);
-  // RESERVED is not IN_STOCK, so the status guard is what answers first — the
-  // sentence still has to name the item and tell the operator what to do.
   check(
     "void refused, naming the item",
     !v3.ok && v3.error.includes(PREFIX + "3a"),
     v3.ok ? "accepted" : v3.error
   );
 
-  // ── 4. refused once a parcel has been drawn against ───────────────────────
   console.log("\n4. a drawn parcel blocks the void (status never changed)");
   const d4 = await bill("4", [parcel(PREFIX + "4a", 10)]);
   const it4 = await itemBySku(PREFIX + "4a");
-  // Adjusted, not invoiced: a write-off/recount moves carats with no document,
-  // so this is the case the status and other-document guards cannot see.
   const adj = await adjustParcelRemaining(
     it4!.id,
     { remainingCt: 9.5, remainingQty: 95, reason: "smoke: dust write-off" },
@@ -231,7 +207,6 @@ async function main(): Promise<void> {
     v4.ok ? "accepted" : v4.error
   );
 
-  // ── 5. refused when the receipt topped up an existing lot ─────────────────
   console.log("\n5. a restock line blocks the void (cost was re-averaged)");
   await bill("5", [parcel(PREFIX + "5a", 10)]);
   const d5b = await bill("5b", [parcel(PREFIX + "5a", 5, { costPerCt: 200 })]);
@@ -242,7 +217,6 @@ async function main(): Promise<void> {
     v5.ok ? "accepted" : v5.error
   );
 
-  // ── 6. outbound void still returns stock (regression) ─────────────────────
   console.log("\n6. Memo Out / Invoice void puts stock back");
   const d6 = await bill("6", [single(PREFIX + "6a"), parcel(PREFIX + "6b", 10)]);
   const it6a = await itemBySku(PREFIX + "6a");
@@ -271,7 +245,6 @@ async function main(): Promise<void> {
   );
   check("the receipt is voidable again once its items are free", (await voidDocument(d6.id, user.id)).ok);
 
-  // ── 7. a Purchase Order voids without touching stock ──────────────────────
   console.log("\n7. Purchase Order void moves no stock");
   const d7 = await bill("7", [parcel(PREFIX + "7a", 10)]);
   const it7 = await itemBySku(PREFIX + "7a");
@@ -280,8 +253,6 @@ async function main(): Promise<void> {
     user.id
   );
   check("PO created", po.ok, po.ok ? undefined : po.error);
-  // The item never left stock, so only the other-document guard can catch this:
-  // an open order against goods the receipt is about to delete.
   const v7pre = await voidDocument(d7.id, user.id);
   check(
     "receipt refuses while a live PO names its item",
@@ -295,12 +266,9 @@ async function main(): Promise<void> {
     remaining: n(it7b!.stone!.remainingCt)
   });
   check("item still IN_STOCK", it7b!.status === "IN_STOCK");
-  // Nothing else holds the parcel now, so the receipt clears — the sequence
-  // Jennifer actually needs: void what came after, then void the receipt.
   const v7post = await voidDocument(d7.id, user.id);
   check("receipt voidable once the PO is void", v7post.ok, v7post.ok ? undefined : v7post.error);
 
-  // ── 8. a return document cannot be voided ─────────────────────────────────
   console.log("\n8. return documents refuse by name");
   const d8 = await bill("8", [single(PREFIX + "8a")]);
   const it8 = await itemBySku(PREFIX + "8a");
@@ -326,7 +294,6 @@ async function main(): Promise<void> {
   }
   void d8;
 
-  // ── 9. delete: only once the document holds nothing ───────────────────────
   console.log("\n9. delete refuses while stock is held, allows after a void");
   const d9 = await bill("9", [single(PREFIX + "9a")]);
   const del9 = await deleteDocument(d9.id);
@@ -345,7 +312,6 @@ async function main(): Promise<void> {
     (await prisma.document.findUnique({ where: { id: d9.id } })) === null
   );
 
-  // ── 10. delete refuses under a return ─────────────────────────────────────
   console.log("\n10. delete refuses a document with a return against it");
   if (memo8.ok) {
     const del10 = await deleteDocument(memo8.document.id);

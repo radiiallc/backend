@@ -16,14 +16,11 @@ import {
 
 export const profileRouter = Router();
 
-// Profile reads/edits require a session only (no role gate) — mirrors the
-// pre-split actions' getSessionUserId().
 profileRouter.use(requireAuth);
 
 function wrap(handler: (req: Request, res: Response) => Promise<void>) {
   return (req: Request, res: Response): void => {
     handler(req, res).catch((err) => {
-      // eslint-disable-next-line no-console
       console.error("[profile] handler error", err);
       if (!res.headersSent) res.status(500).json({ error: "Internal error" });
     });

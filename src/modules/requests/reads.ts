@@ -69,8 +69,6 @@ export async function getRequestForBuyer(
     const totalPriceUsd = Number(it.snapshotPriceUsd);
     return {
       id: it.id,
-      // gemstone rows carry gemstoneId on the column; diamond rows stash diamondId
-      // in the snapshot payload (the catalog /items/:id endpoint accepts either).
       itemId: it.gemstoneId ?? snap.diamondId ?? null,
       sku: it.snapshotSku,
       status: it.status,

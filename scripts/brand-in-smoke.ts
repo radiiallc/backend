@@ -1,9 +1,3 @@
-// Brand In smoke — a designer/brand whose inventory RADIIA holds and manages.
-// A Brand In receives new stock tagged to the BRAND OWNER (a Company), addresses
-// the doc to that Company, mints its own BIN-#### number and carries no due date;
-// from there the normal outbound flow (Memo Out -> Invoice) runs on those pieces.
-// Also guards the party rules and the vendor Bill In regression.
-// Runs against radiia_dev at the service + contract layer. Run: npm run smoke:brandin
 import { prisma } from "@/db";
 import { createInboundDocument, createOutboundDocument } from "@/modules/ims/documents.service";
 import { ImsCreateInboundDocumentSchema, type ImsInboundItemInput } from "@/contract";
@@ -42,8 +36,6 @@ function singleStone(sku: string, over: Record<string, unknown> = {}): ImsInboun
 
 const SKUS = ["SMOKE-BIN-1", "SMOKE-BIN-2", "SMOKE-BIN-3"];
 
-// Clean at both ends: a crashed prior run can't poison this one, and dev
-// inventory isn't left holding smoke fixtures.
 async function cleanupItems(): Promise<void> {
   const stale = await prisma.inventoryItem.findMany({
     where: { sku: { in: SKUS } },
@@ -73,7 +65,6 @@ async function item(sku: string) {
 
 async function main(): Promise<void> {
   const user = await prisma.user.findFirstOrThrow({ where: { role: "ADMIN" } });
-  // Company.name is not unique — find, then create if absent.
   const brand =
     (await prisma.company.findFirst({ where: { name: "SMOKE BrandIn Designer" } })) ??
     (await prisma.company.create({ data: { name: "SMOKE BrandIn Designer" } }));
@@ -88,7 +79,6 @@ async function main(): Promise<void> {
 
   await cleanupItems();
 
-  // ── 1. Brand In creates inventory tagged to the brand owner ────────────────
   console.log("\n1. Brand In — designer's initial inventory");
   const bin = await createInboundDocument(
     {
@@ -123,7 +113,6 @@ async function main(): Promise<void> {
   });
   check("null -> IN_STOCK audit row points at the brand in", !!hist && hist.previousStatus === null && hist.newStatus === "IN_STOCK", hist);
 
-  // ── 2. The flow Jenn described runs on brand-owned pieces ───────────────────
   console.log("\n2. Memo Out then Invoice on the brand's stock");
   const memo = await createOutboundDocument(
     { type: "MEMO_OUT", clientId: store.id, inventoryItemIds: [it1.id] },
@@ -140,7 +129,6 @@ async function main(): Promise<void> {
   check("brand item is now SOLD", (await item("SMOKE-BIN-2")).status === "SOLD");
   check("sold item stays tagged to the brand owner", (await item("SMOKE-BIN-2")).brandOwnerId === brand.id);
 
-  // ── 3. Vendor Bill In regression — still vendor-owned, no minted number ─────
   console.log("\n3. Bill In regression (vendor-owned)");
   const bill = await createInboundDocument(
     { type: "BILL_IN", vendorId: vendor.id, externalReference: "VEND-BILL-9", items: [singleStone("SMOKE-BIN-3")] },
@@ -154,7 +142,6 @@ async function main(): Promise<void> {
   check("bill in mints no internal number", billDoc.documentNumber === null, billDoc.documentNumber);
   check("bill in due date from vendor terms (+30d)", billDoc.dueDate !== null, billDoc.dueDate);
 
-  // ── 4. Unknown brand owner is rejected by the service ──────────────────────
   console.log("\n4. Guards");
   const ghost = await createInboundDocument(
     { type: "BRAND_INVENTORY_IN", brandOwnerId: "does-not-exist", items: [singleStone("SMOKE-BIN-X")] },
@@ -162,7 +149,6 @@ async function main(): Promise<void> {
   );
   check("unknown brand owner rejected", !ghost.ok && ghost.error === "Brand owner not found", ghost);
 
-  // ── 5. Contract party rules (schema) ───────────────────────────────────────
   const items = [singleStone("SMOKE-BIN-Z")];
   check(
     "brand in WITHOUT a brand owner is rejected",

@@ -7,15 +7,10 @@ import { getFeedDiamondsPage } from "../modules/internal/feed.service";
 import { resolveCertUrl } from "../modules/internal/cert.service";
 import { resolveGemstoneImage2Url } from "../modules/internal/gem-image.service";
 
-// Service-to-service surface for the portal's session-less public/feed/proxy
-// routes. Gated by the shared INTERNAL_API_SECRET (requireInternal). Never
-// returns vendor certUrl: the cert endpoint streams the file; feed rows expose
-// only `hasCert` (Gate §8).
 export const internalRouter = Router();
 
 internalRouter.use(requireInternal);
 
-// GET /internal/share?ids=a,b,c — stones for the public share selection page.
 internalRouter.get("/share", async (req, res) => {
   const raw = typeof req.query.ids === "string" ? req.query.ids : "";
   const ids = raw.split(",").map((s) => s.trim()).filter(Boolean);
@@ -23,7 +18,6 @@ internalRouter.get("/share", async (req, res) => {
   res.json({ items });
 });
 
-// GET /internal/feed/diamonds?cursor=&limit= — one cursor page of Sherry feed rows.
 internalRouter.get("/feed/diamonds", async (req, res) => {
   const cursor = typeof req.query.cursor === "string" && req.query.cursor ? req.query.cursor : undefined;
   const limit = Number(req.query.limit) || 0;
@@ -40,8 +34,6 @@ function isFetchableUrl(url: string): boolean {
   }
 }
 
-// GET /internal/certificate/:type/:id — resolves the vendor cert URL server-side,
-// fetches it, and streams the file back. The URL itself is never returned.
 internalRouter.get("/certificate/:type/:id", async (req, res) => {
   const certUrl = await resolveCertUrl(req.params.type, req.params.id);
   if (!certUrl || !isFetchableUrl(certUrl)) {
@@ -68,9 +60,6 @@ internalRouter.get("/certificate/:type/:id", async (req, res) => {
   Readable.fromWeb(upstream.body as Parameters<typeof Readable.fromWeb>[0]).pipe(res);
 });
 
-// GET /internal/gemstone-image/:id — resolves the gemstone's vendor second image
-// (gem-on-hand) URL server-side, fetches it, and streams the file back. The vendor
-// host never reaches the browser (Gate §8), same as the certificate proxy above.
 internalRouter.get("/gemstone-image/:id", async (req, res) => {
   const imageUrl = await resolveGemstoneImage2Url(req.params.id);
   if (!imageUrl || !isFetchableUrl(imageUrl)) {

@@ -6,8 +6,6 @@ import { submitRequest } from "../modules/requests/submit.service";
 
 export const requestsRouter = Router();
 
-// All buyer request routes require a session; submit additionally requires the
-// buyer capability (BUYER or ADMIN) — mirrors the pre-split server action.
 requestsRouter.use(requireAuth);
 
 function requireBuyer(req: Request, res: Response, next: NextFunction): void {
@@ -22,7 +20,6 @@ function requireBuyer(req: Request, res: Response, next: NextFunction): void {
 function wrap(handler: (req: Request, res: Response) => Promise<void>) {
   return (req: Request, res: Response): void => {
     handler(req, res).catch((err) => {
-      // eslint-disable-next-line no-console
       console.error("[requests] handler error", err);
       if (!res.headersSent) res.status(500).json({ error: "Internal error" });
     });
@@ -33,8 +30,6 @@ function userIdOf(req: Request): string {
   return req.user!.id;
 }
 
-// Submit a memo/invoice request from selected cart items. Echoes the
-// SubmitRequestResult body (always 200) the portal client already branches on.
 requestsRouter.post(
   "/",
   requireBuyer,
@@ -43,7 +38,6 @@ requestsRouter.post(
   })
 );
 
-// Buyer request history.
 requestsRouter.get(
   "/",
   wrap(async (req, res) => {
@@ -51,7 +45,6 @@ requestsRouter.get(
   })
 );
 
-// Buyer request detail (ownership enforced in the read; 404 if not owned/found).
 requestsRouter.get(
   "/:id",
   wrap(async (req, res) => {

@@ -8,7 +8,6 @@ export type VendorMutationResult =
   | { ok: false; error: string };
 
 function isUniqueNameViolation(e: unknown): boolean {
-  // Vendor.name is @unique — a duplicate create / clashing rename hits P2002.
   return (
     e instanceof Prisma.PrismaClientKnownRequestError &&
     e.code === "P2002" &&
@@ -21,9 +20,6 @@ async function loadVendorDto(id: string): Promise<ImsVendor> {
   return prismaVendorToDto(v);
 }
 
-// Manually add a vendor (admin "New vendor"). Only name is required; the rest use
-// schema defaults / null. name is unique — a duplicate is a friendly 400, not a
-// 500. quickbooksId is not set here (the QuickBooks connect is a separate flow).
 export async function createVendor(input: ImsCreateVendor): Promise<VendorMutationResult> {
   try {
     const created = await prisma.vendor.create({
@@ -49,9 +45,6 @@ export async function createVendor(input: ImsCreateVendor): Promise<VendorMutati
   }
 }
 
-// Patch a vendor's fields. An absent key is left unchanged; an explicit null
-// clears a nullable field. A rename that clashes with another vendor's name is a
-// friendly 400.
 export async function updateVendor(
   id: string,
   input: ImsUpdateVendor

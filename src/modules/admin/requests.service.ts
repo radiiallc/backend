@@ -13,8 +13,6 @@ import { IMS_DOC_INCLUDE, prismaDocToDto } from "../ims/documents.mappers";
 import { mintSkuBatch } from "../ims/inventory.service";
 import { prismaRequestToAdminRequest } from "./mappers";
 
-// Requests read include used by the action services so the returned AdminRequest
-// carries the same fields the read endpoints do (converted-doc number etc.).
 const REQUEST_ADMIN_INCLUDE = {
   items: true,
   convertedDocument: { select: { documentNumber: true } }
@@ -22,8 +20,6 @@ const REQUEST_ADMIN_INCLUDE = {
 
 type RequestWithItemsUser = PrismaRequest & { items: PrismaRequestItem[]; user: PrismaUser };
 
-// Overall request status derived from its items' individual decisions. Shared by
-// completeReview, decline, and convert so the three never disagree.
 function deriveOverall(
   items: PrismaRequestItem[]
 ): "APPROVED" | "PARTIALLY_APPROVED" | "REJECTED" {
@@ -34,10 +30,6 @@ function deriveOverall(
   return "PARTIALLY_APPROVED";
 }
 
-// Build the per-item review lines + send the outcome email. Fail-loud-but-non-
-// blocking (Gate §7): the review status is already committed by the caller, so a
-// send failure returns a warning string rather than throwing. Shared by
-// completeReview / declineRequest / convertRequestToDocument.
 async function sendReviewOutcomeEmail(
   request: RequestWithItemsUser,
   overall: "APPROVED" | "PARTIALLY_APPROVED" | "REJECTED"
@@ -89,11 +81,6 @@ async function sendReviewOutcomeEmail(
     );
   }
 }
-
-// Port of the portal admin request actions. requireAdmin() + revalidatePath are
-// handled at the route layer; item status transitions, the overall-status
-// derivation, the pending-items guard, and the review-summary email are
-// unchanged.
 
 export async function approveRequestItem(itemId: string): Promise<AdminActionResult> {
   if (!itemId) return { ok: false, error: "Missing itemId" };
@@ -164,11 +151,6 @@ export async function completeRequestReview(requestId: string): Promise<AdminAct
   return warning ? { ok: true, warning } : { ok: true };
 }
 
-// ── H9 #0036 — Decline & close ───────────────────────────────────────────────
-// The exit for a request where nothing is going out: deny every remaining item
-// and finalize the review (→ REJECTED, reviewedAt, outcome email). Touches NO
-// inventory — declining is communication/record only. Refuses if any line is
-// approved (that request should mint a Memo/Invoice via convert instead).
 export async function declineRequest(requestId: string): Promise<AdminActionResult> {
   if (!requestId) return { ok: false, error: "Missing requestId" };
 
@@ -198,7 +180,6 @@ export async function declineRequest(requestId: string): Promise<AdminActionResu
     });
   });
 
-  // Re-read so the outcome email reflects the now-all-rejected items.
   const finalized = await prisma.request.findUniqueOrThrow({
     where: { id: requestId },
     include: { items: true, user: true }
@@ -207,12 +188,6 @@ export async function declineRequest(requestId: string): Promise<AdminActionResu
   return warning ? { ok: true, warning } : { ok: true };
 }
 
-// ── H9 #0038 — substitute stones ─────────────────────────────────────────────
-// Add owned inventory items to a request as dealer-offered substitutes (auto-
-// APPROVED, flagged via substituteInventoryItemId). Only IN_STOCK / RESERVED
-// items are addable, and never one already on the request. Each new line
-// snapshots the item's wholesale value (mirrors the mock's twOf), so convert can
-// price it without re-reading the item.
 export type SubstituteResult =
   | { ok: true; request: AdminRequest }
   | { ok: false; error: string };
@@ -303,8 +278,6 @@ export async function addSubstituteItems(
   return { ok: true, request: prismaRequestToAdminRequest(updated) };
 }
 
-// Remove a dealer-added substitute line. Client-requested lines can never be
-// removed (only approved/denied); the guard enforces that via the substitute FK.
 export async function removeSubstituteItem(requestItemId: string): Promise<SubstituteResult> {
   if (!requestItemId) return { ok: false, error: "Missing requestItemId" };
   const item = await prisma.requestItem.findUnique({
@@ -326,20 +299,6 @@ export async function removeSubstituteItem(requestItemId: string): Promise<Subst
   return { ok: true, request: prismaRequestToAdminRequest(updated) };
 }
 
-// ── H9 #0035 — convert an approved request into a Memo Out / Invoice ──────────
-// Option A (auto-receive on convert): the terminal action for a request with at
-// least one approved item. It is the SINGLE "send review & create doc" action —
-// any still-pending line is denied (it isn't going out), the client gets the
-// outcome email, and the approved lines become a real MEMO_OUT / INVOICE.
-//
-// Each approved line becomes a document line backed by an owned InventoryItem:
-//   • a client-requested (feed) line JIT-receives a fresh STONE item from its
-//     snapshot (born IN_STOCK, then drawn onto the doc → ON_MEMO / SOLD). Real
-//     cost/ownership live in QuickBooks; the line price is the client-agreed
-//     snapshot total.
-//   • a substitute line draws down the owned item it already points at.
-// Every drawn item gets an ItemStatusHistory row pointing at the new doc, exactly
-// like the outbound create path.
 export type ConvertRequestResult =
   | { ok: true; document: ImsDocument; request: AdminRequest; warning?: string }
   | { ok: false; error: string };
@@ -368,7 +327,6 @@ export async function convertRequestToDocument(
   const newItemStatus = NEW_ITEM_STATUS[type];
   const newLineStatus = NEW_LINE_STATUS[type];
 
-  // Validate substitute items up front (must still be drawable).
   const substituteIds = approved
     .map((i) => i.substituteInventoryItemId)
     .filter((v): v is string => v !== null);
@@ -393,11 +351,9 @@ export async function convertRequestToDocument(
   const now = new Date();
 
   const docId = await prisma.$transaction(async (tx) => {
-    // Batch-mint SKUs for the feed lines that need a fresh inventory item.
     const feedApproved = approved.filter((i) => i.substituteInventoryItemId === null);
     const skus = await mintSkuBatch(tx, feedApproved.length);
 
-    // Build the (inventoryItemId, price, sourceStatus) for every approved line.
     type Line = {
       inventoryItemId: string;
       previousStatus: "IN_STOCK" | "RESERVED";
@@ -408,7 +364,6 @@ export async function convertRequestToDocument(
     };
     const lines: Line[] = [];
 
-    // 1) JIT-receive each feed line as a fresh STONE, then draw it onto the doc.
     let skuIdx = 0;
     for (const ri of feedApproved) {
       const payload = (ri.snapshotPayload ?? {}) as Record<string, unknown>;
@@ -468,7 +423,6 @@ export async function convertRequestToDocument(
       });
     }
 
-    // 2) Draw each substitute line down from the owned item it points at.
     for (const ri of approved) {
       if (ri.substituteInventoryItemId === null) continue;
       const item = subById.get(ri.substituteInventoryItemId)!;
@@ -483,7 +437,6 @@ export async function convertRequestToDocument(
       });
     }
 
-    // Mint the document number and create the doc with all lines.
     const seq = await tx.documentSequence.upsert({
       where: { type },
       create: { type, lastValue: 1001 },
@@ -511,7 +464,6 @@ export async function convertRequestToDocument(
       }
     });
 
-    // Transition every drawn item + audit each move against this doc.
     for (const l of lines) {
       await tx.inventoryItem.update({
         where: { id: l.inventoryItemId },
@@ -533,8 +485,6 @@ export async function convertRequestToDocument(
       });
     }
 
-    // Any still-pending line wasn't approved → deny it. Then finalize the review
-    // and link the request to its new document.
     await tx.requestItem.updateMany({
       where: { requestId, status: "PENDING" },
       data: { status: "REJECTED" }
@@ -542,7 +492,6 @@ export async function convertRequestToDocument(
     return doc.id;
   });
 
-  // Reload request (post-deny) to derive the overall outcome + email it.
   const finalized = await prisma.request.findUniqueOrThrow({
     where: { id: requestId },
     include: { items: true, user: true }

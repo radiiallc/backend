@@ -1,16 +1,3 @@
-/**
- * gia-enrich — optional post-parse pass that fills a stone row's grade fields from
- * its GIA report. Runs only when a bulk import is requested with `enrichGia`. Each
- * STONE row that carries a Cert No is looked up on GIA (concurrency-limited); the
- * report's grade fields OVERWRITE the row's values where GIA supplies one (the cert
- * is authoritative), and the CSV value is kept on any miss. Cost, pricing, quantity,
- * vendor SKU, photos and ratio always stay from the CSV — GIA doesn't carry them.
- *
- * GIA is read-only and the lookup never throws. A missing key degrades every stone
- * row to `notConfigured` with NO outbound call, so this is safe in any environment.
- * The lookup is injected (defaults to the real service) so the merge policy is
- * unit-testable without hitting the network.
- */
 
 import {
   ImsInboundItemInputSchema,
@@ -25,14 +12,8 @@ import { lookupGiaReport } from "./gia.service";
 
 export type GiaLookup = (reportNumber: string) => ReturnType<typeof lookupGiaReport>;
 
-// Labs whose certs GIA cannot resolve — skip the outbound call (IGI enrichment is
-// queued but not built). A blank lab still attempts GIA: a bare cert number on an
-// inbound vendor sheet is overwhelmingly a GIA report, and a genuine miss just
-// keeps the CSV values.
 const NON_GIA_LAB = /\b(igi|gcal|bgl|ica|aigs|grs)\b/i;
 
-// GIA prefill key -> stone detail field. Only these grade fields are taken from the
-// report. `fancyColor` is intentionally excluded (the GIA mapper never sets it).
 const FIELD_MAP: ReadonlyArray<[keyof ImsGiaPrefill, string]> = [
   ["naturalOrLab", "naturalOrLab"],
   ["gemType", "gemType"],
@@ -56,9 +37,6 @@ const FIELD_MAP: ReadonlyArray<[keyof ImsGiaPrefill, string]> = [
   ["treatment", "treatment"]
 ];
 
-// Overwrite a stone item's grade fields with GIA's (where present). Re-validates the
-// merged item against the real schema; returns null if the merge somehow breaks it
-// (defensive — caller then keeps the original row and flags an error).
 function mergeStone(
   item: ImsInboundItemInput,
   prefill: ImsGiaPrefill
@@ -84,8 +62,6 @@ const skip = (message: string, reportNumber: string | null): ImsCsvGiaOutcome =>
   appliedFields: []
 });
 
-// Enrich one ok item. Non-stone or cert-less rows are returned untouched with a
-// `skipped`/null outcome; a stone with a GIA cert is looked up and merged.
 async function enrichItem(
   item: ImsInboundItemInput,
   lookup: GiaLookup
@@ -122,15 +98,12 @@ async function enrichItem(
   }
 
   if (res.found && !res.supported) {
-    // A real report, but a kind we can't map onto a stone (pearl / jewelry card).
     return { item, gia: skip(res.error ?? "GIA report isn't a gradeable stone.", res.reportNumber ?? cert) };
   }
 
   return { item, gia: { state: "notFound", message: res.error, reportNumber: cert, appliedFields: [] } };
 }
 
-// Run `fn` over items with at most `limit` in flight (GIA is rate-limited; a 60-stone
-// Memo In shouldn't fan out to 60 simultaneous calls). Order-preserving.
 async function mapLimited<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R>): Promise<R[]> {
   const out = new Array<R>(items.length);
   let next = 0;
@@ -143,18 +116,12 @@ async function mapLimited<T, R>(items: T[], limit: number, fn: (t: T) => Promise
   return out;
 }
 
-/**
- * Enrich a parse result in place-of-return: fills stone rows from GIA and attaches a
- * per-row `gia` outcome, keeping `rows[*].item` and the flat `items` array in sync so
- * the confirmed inbound POST carries the enriched values. Only ok rows are touched.
- */
 export async function enrichInboundCsvWithGia(
   result: ImsParseInboundCsvResult,
   lookup: GiaLookup = lookupGiaReport
 ): Promise<ImsParseInboundCsvResult> {
   const rows = result.rows.map((r) => ({ ...r }));
 
-  // No key configured → mark every cert-bearing stone row notConfigured, no calls.
   if (!env.giaApiKey) {
     for (const r of rows) {
       if (r.ok && r.item?.itemType === "STONE" && r.item.stone.certNumber) {

@@ -1,15 +1,8 @@
-// GIA lookup service (IMS ⑤). Fetches a GIA report via the integration client and
-// normalizes it into the admin-facing `ImsGiaLookupResult` — a mergeable pre-fill
-// for the stone item form plus the transient GIA asset links. Always resolves to a
-// result (never throws): fetch failures become `found:false` + a friendly `error`,
-// so the admin proxy can return one consistent 200 shape.
 
 import type { ImsGiaLinks, ImsGiaLookupResult, ImsGiaPrefill, StoneType } from "@/contract";
 
 import { fetchGiaReport, type GiaReport } from "../../integrations/gia/gia-api";
 
-// GIA returns human phrases where a field wasn't requested/determined; those aren't
-// real values for our form, so blank them out.
 const PLACEHOLDERS = new Set([
   "not requested",
   "not determined",
@@ -29,7 +22,6 @@ function meaningful(s: string | null | undefined): string | null {
   return t && !PLACEHOLDERS.has(t.toLowerCase()) ? t : null;
 }
 
-// "1.32 carat" -> 1.32, "5.66 carats" -> 5.66, "58" -> 58, "61.7" -> 61.7.
 function leadingNumber(s: string | null | undefined): number | null {
   if (!s) return null;
   const m = s.replace(/,/g, "").match(/-?\d+(\.\d+)?/);
@@ -38,8 +30,6 @@ function leadingNumber(s: string | null | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-// GIA measurements are one string: round = "min - max x depth mm", fancy =
-// "L x W x H mm". Both yield three numbers in order → length, width, height.
 function parseMeasurements(s: string | null | undefined): {
   lengthMm: number | null;
   widthMm: number | null;
@@ -49,7 +39,6 @@ function parseMeasurements(s: string | null | undefined): {
   return { lengthMm: nums[0] ?? null, widthMm: nums[1] ?? null, heightMm: nums[2] ?? null };
 }
 
-// Result __typename -> (is it a stone we can pre-fill, and natural/lab if a diamond).
 function classifyResults(typename: string | null | undefined): {
   supported: boolean;
   naturalOrLab: StoneType | null;
@@ -60,10 +49,8 @@ function classifyResults(typename: string | null | undefined): {
     case "LabGrownDiamondGradingReportResults":
       return { supported: true, naturalOrLab: "LAB" };
     case "IdentificationReportResults":
-      // Colored stone / gemstone — a stone we can pre-fill, but not a graded diamond.
       return { supported: true, naturalOrLab: null };
     default:
-      // Pearl, jewelry card, melee, etc. — nothing to map onto a stone item.
       return { supported: false, naturalOrLab: null };
   }
 }
@@ -83,8 +70,6 @@ function buildPrefill(report: GiaReport, naturalOrLab: StoneType | null): ImsGia
   const dims = parseMeasurements(r.measurements);
   return {
     naturalOrLab,
-    // Diamond reports (NATURAL/LAB) → "Diamond"; a colored stone carries its
-    // variety ("Emerald") or, failing that, species ("Natural Beryl").
     gemType: naturalOrLab ? "Diamond" : (txt(r.variety) ?? txt(r.species)),
     shape: txt(r.shape_and_cutting_style) ?? txt(r.shape),
     weightCt: leadingNumber(r.carat_weight) ?? leadingNumber(r.weight),
@@ -108,7 +93,6 @@ function buildPrefill(report: GiaReport, naturalOrLab: StoneType | null): ImsGia
   };
 }
 
-// A failure from the client → a not-found-shaped result carrying the reason.
 function failure(reportNumber: string, error: string): ImsGiaLookupResult {
   return {
     found: false,
@@ -138,8 +122,6 @@ export async function lookupGiaReport(reportNumber: string): Promise<ImsGiaLooku
   const reportDate = txt(report.report_date_iso) ?? txt(report.report_date);
 
   if (!supported) {
-    // GIA found the report, but it isn't a diamond/gemstone we can pre-fill. Still
-    // hand back the PDF link so the admin can view it and enter the item manually.
     return {
       found: true,
       supported: false,

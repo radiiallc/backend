@@ -65,22 +65,17 @@ import { addVocabularyValue } from "../modules/ims/vocabulary.service";
 
 export const imsRouter = Router();
 
-// The in-house IMS is staff-only. There is no STAFF role post-rollback, so the
-// back-office is gated by ADMIN (401 unauth / 403 non-admin), same as the portal
-// admin surfaces.
 imsRouter.use(requireAdmin);
 
 function wrap(handler: (req: Request, res: Response) => Promise<unknown>) {
   return (req: Request, res: Response): void => {
     handler(req, res).catch((err) => {
-      // eslint-disable-next-line no-console
       console.error("[ims] handler error", err);
       if (!res.headersSent) res.status(500).json({ error: "Internal error" });
     });
   };
 }
 
-// ── Inventory ─────────────────────────────────────────────────────────────────
 imsRouter.get(
   "/inventory",
   wrap(async (req, res) => {
@@ -105,9 +100,6 @@ imsRouter.get(
   })
 );
 
-// Manually add one inventory item (+ its single detail group). The SKU is
-// auto-minted; the item enters IN_STOCK. Inbound docs (Bill In / Memo In) are a
-// separate, later path — this is the admin's "New inventory item".
 imsRouter.post(
   "/inventory",
   wrap(async (req, res) => {
@@ -125,8 +117,6 @@ imsRouter.post(
   })
 );
 
-// Edit an item's core + own-type detail fields. Status and itemType are not
-// patchable here (status moves only through documents / reserve-release).
 imsRouter.patch(
   "/inventory/:id",
   wrap(async (req, res) => {
@@ -145,8 +135,6 @@ imsRouter.patch(
   })
 );
 
-// Reserve an in-stock item as a hold for a client; release clears the hold. The
-// one non-document status move (IN_STOCK ↔ RESERVED), each audited.
 imsRouter.post(
   "/inventory/:id/reserve",
   wrap(async (req, res) => {
@@ -178,9 +166,6 @@ imsRouter.post(
   })
 );
 
-// Adjust a parcel's remaining carat/piece balance with no document behind it —
-// a recount, or writing off the unsellable last crumb of a melee lot. Requires a
-// reason; audited to ItemStatusHistory.
 imsRouter.patch(
   "/inventory/:id/remaining",
   wrap(async (req, res) => {
@@ -199,11 +184,6 @@ imsRouter.patch(
   })
 );
 
-// ── GIA report lookup ─────────────────────────────────────────────────────────
-// Proxy a GIA report number to GIA's Report Results API (key server-side) and
-// return a mergeable pre-fill for the stone item form. Always 200 with a result
-// body — a missing report / unsupported kind / GIA outage all surface as
-// found:false + a friendly `error`, so the admin renders one consistent shape.
 imsRouter.post(
   "/gia/lookup",
   wrap(async (req, res) => {
@@ -216,7 +196,6 @@ imsRouter.post(
   })
 );
 
-// ── Vendors ───────────────────────────────────────────────────────────────────
 imsRouter.get("/vendors", wrap(async (_req, res) => res.json(await listVendorsFromDb())));
 
 imsRouter.get(
@@ -231,8 +210,6 @@ imsRouter.get(
   })
 );
 
-// Manually add a vendor (admin "New vendor"). name is unique — a duplicate is a
-// friendly 400.
 imsRouter.post(
   "/vendors",
   wrap(async (req, res) => {
@@ -250,8 +227,6 @@ imsRouter.post(
   })
 );
 
-// Edit a vendor's fields (admin "Edit vendor"). A clashing rename is a friendly
-// 400; a missing id is 404.
 imsRouter.patch(
   "/vendors/:id",
   wrap(async (req, res) => {
@@ -270,7 +245,6 @@ imsRouter.patch(
   })
 );
 
-// ── Clients (back-office accounts) ──────────────────────────────────────────
 imsRouter.get(
   "/clients",
   wrap(async (req, res) => {
@@ -295,8 +269,6 @@ imsRouter.get(
   })
 );
 
-// Manually add a back-office client (admin "New client"). Lands ACTIVE; portal
-// self-signups land PENDING via the portal auth path, not here.
 imsRouter.post(
   "/clients",
   wrap(async (req, res) => {
@@ -314,8 +286,6 @@ imsRouter.post(
   })
 );
 
-// Edit a client's account fields + staff internal notes. clientStatus is not
-// patchable here — it moves only through the lifecycle endpoint below.
 imsRouter.patch(
   "/clients/:id",
   wrap(async (req, res) => {
@@ -334,8 +304,6 @@ imsRouter.patch(
   })
 );
 
-// Approve / decline / deactivate / reactivate a client (admin #0045). The verb
-// carries the transition rules (approve also requires portal markups be set).
 imsRouter.post(
   "/clients/:id/status",
   wrap(async (req, res) => {
@@ -354,7 +322,6 @@ imsRouter.post(
   })
 );
 
-// ── Vocabulary ────────────────────────────────────────────────────────────────
 imsRouter.get(
   "/vocabulary",
   wrap(async (req, res) => {
@@ -363,8 +330,6 @@ imsRouter.get(
   })
 );
 
-// Add (or reuse) a value in a self-growing list. 201 on a fresh insert, 200 when
-// an existing value (case-insensitive) is reused (admin pick-or-add).
 imsRouter.post(
   "/vocabulary",
   wrap(async (req, res) => {
@@ -378,7 +343,6 @@ imsRouter.post(
   })
 );
 
-// ── Documents ─────────────────────────────────────────────────────────────────
 imsRouter.get(
   "/documents",
   wrap(async (req, res) => {
@@ -403,9 +367,6 @@ imsRouter.get(
   })
 );
 
-// Create an outbound Memo Out / Invoice from existing inventory, transitioning
-// each line's item (ON_MEMO / SOLD) and minting the document number. The
-// creating admin comes from the session (requireAdmin guarantees req.user).
 imsRouter.post(
   "/documents",
   wrap(async (req, res) => {
@@ -423,9 +384,6 @@ imsRouter.post(
   })
 );
 
-// Create a Purchase Order — vendor-addressed, cost-priced, no item-status move
-// (see documents.service). Static path, so it precedes the "/documents/:id/*"
-// param routes below.
 imsRouter.post(
   "/documents/purchase-order",
   wrap(async (req, res) => {
@@ -443,9 +401,6 @@ imsRouter.post(
   })
 );
 
-// Create an inbound Bill In / Memo In that RECEIVES new inventory — each item is
-// created (-> IN_STOCK) and linked to the doc (see documents.service). Static
-// path, so it precedes the "/documents/:id/*" param routes below.
 imsRouter.post(
   "/documents/inbound",
   wrap(async (req, res) => {
@@ -463,12 +418,6 @@ imsRouter.post(
   })
 );
 
-// Dry-run parse of an uploaded inventory CSV (Jennifer's 7-13 template) into
-// inbound item payloads for preview — writes NOTHING to our DB. The admin previews
-// the per-row result, then POSTs the ok items to /documents/inbound (above) to
-// actually receive them. With `enrichGia`, each stone row's Cert No is additionally
-// looked up on GIA (a read) and its grade fields filled from the report. Static
-// path, so it precedes the "/documents/:id/*" param routes below.
 imsRouter.post(
   "/documents/inbound/parse-csv",
   wrap(async (req, res) => {
@@ -478,23 +427,16 @@ imsRouter.post(
       return;
     }
     const { category, csv, fileBase64, vendorId } = parsed.data;
-    // An upload may arrive as a bare base64 string or a data: URL, depending on
-    // how the client read the file — accept both, then let the parser route on
-    // the decoded bytes (.xlsx workbook vs CSV text).
     const parsedRows = csv
       ? parseInventoryCsv(category, csv)
       : parseInventoryUpload(category, Buffer.from(fileBase64!.replace(/^data:[^,]*,/, ""), "base64"));
     const enriched = parsed.data.enrichGia
       ? await enrichInboundCsvWithGia(parsedRows)
       : parsedRows;
-    // Last: a row whose SKU is already in stock is a top-up, not a new item, and
-    // the preview has to say so before anything is committed.
     res.json(await annotateRestocks(enriched, vendorId ?? null));
   })
 );
 
-// Stamp emailedAt = now on a batch of docs (admin sendEmail). Static path, so
-// it must precede the "/documents/:id/*" param routes below.
 imsRouter.post(
   "/documents/email",
   wrap(async (req, res) => {
@@ -512,8 +454,6 @@ imsRouter.post(
   })
 );
 
-// Stamp quickbooksSyncedAt = now on a batch of INVOICE/BILL_IN docs (admin
-// _runSync). Status is left unchanged — see documents.service note.
 imsRouter.post(
   "/documents/quickbooks-sync",
   wrap(async (req, res) => {
@@ -531,10 +471,6 @@ imsRouter.post(
   })
 );
 
-// Void a document — undo it. Outbound docs give their stock back (parcel
-// carats/pieces, whole-item statuses); an inbound receipt deletes the inventory
-// it created. Either way the document is kept, marked VOID, so numbering stays
-// gap-free.
 imsRouter.post(
   "/documents/:id/void",
   wrap(async (req, res) => {
@@ -547,9 +483,6 @@ imsRouter.post(
   })
 );
 
-// Delete a document outright. Refusals are 409 — the request is well formed, the
-// document's current state is what says no — and `error` is a full sentence the
-// admin shows verbatim.
 imsRouter.delete(
   "/documents/:id",
   wrap(async (req, res) => {
@@ -562,9 +495,6 @@ imsRouter.delete(
   })
 );
 
-// Record a return against a Memo Out — creates a linked RETURN_MEMO_OUT, sends
-// the returned stones back to IN_STOCK, and auto-closes the memo if nothing is
-// left out. Returns both the new return doc and the updated memo.
 imsRouter.post(
   "/documents/:id/return",
   wrap(async (req, res) => {

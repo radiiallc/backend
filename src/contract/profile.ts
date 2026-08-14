@@ -1,11 +1,5 @@
 import { z } from "zod";
 
-// ────────────────────────────────────────────────────────────────────────────
-// Buyer profile wire contract. Profile reads expose User + Company fields; edits
-// touch User.phone, Company.shippingAddress, or User.passwordHash independently
-// (fullName/email/location/company name/markup are read-only).
-// ────────────────────────────────────────────────────────────────────────────
-
 export const BuyerProfileSchema = z.object({
   userId: z.string(),
   fullName: z.string(),
@@ -22,7 +16,6 @@ export type BuyerProfile = z.infer<typeof BuyerProfileSchema>;
 
 export type ProfileActionResult = { ok: true } | { ok: false; error: string };
 
-// ── Mutation request bodies ─────────────────────────────────────────────────
 export const UpdateBuyerProfileBodySchema = z.object({ phone: z.string() });
 export type UpdateBuyerProfileBody = z.infer<typeof UpdateBuyerProfileBodySchema>;
 

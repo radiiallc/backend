@@ -2,13 +2,6 @@ import { z } from "zod";
 
 import { RequestTypeSchema } from "./request";
 
-// ────────────────────────────────────────────────────────────────────────────
-// Admin wire contract. The admin DTOs use *translated* display enums (ACTIVE,
-// PARTIAL, UNDECIDED) distinct from the underlying Prisma/request enums — the
-// mappers in apps/api do the translation. Names are Admin-prefixed to avoid
-// colliding with the request.ts exports in the contract barrel.
-// ────────────────────────────────────────────────────────────────────────────
-
 export const AdminAccountStatusSchema = z.enum(["PENDING", "ACTIVE", "DEACTIVATED", "DECLINED"]);
 export type AdminAccountStatus = z.infer<typeof AdminAccountStatusSchema>;
 
@@ -62,10 +55,6 @@ export const AdminRequestItemSchema = z.object({
   pricePerCarat: z.number(),
   totalPrice: z.number(),
   status: AdminRequestItemStatusSchema,
-  // H9 #0038 — true when RADIIA added this line as a substitute (it points at an
-  // owned InventoryItem), false for a normal client-requested feed line. The
-  // substitute's inventory id (present only when isSubstitute) lets convert draw
-  // the real stone down instead of receiving a fresh one.
   isSubstitute: z.boolean(),
   substituteInventoryItemId: z.string().nullable()
 });
@@ -82,18 +71,12 @@ export const AdminRequestSchema = z.object({
   reviewedAt: z.string().nullable(),
   noteFromClient: z.string().nullable(),
   externalNote: z.string(),
-  // H9 convertReq (#0035): the Memo Out / Invoice this request became, or null.
-  // convertedDocumentNumber is the human number (MEM-####/INV-####) for the
-  // "Approved · MEM-####" label + click-through.
   convertedDocumentId: z.string().nullable(),
   convertedDocumentNumber: z.string().nullable(),
   items: z.array(AdminRequestItemSchema)
 });
 export type AdminRequest = z.infer<typeof AdminRequestSchema>;
 
-// Per-feed last-upload status shown in the dashboard "Last ingest" box. One
-// entry per monitored feed (Skylab, Disons, RADIIA gemstones); `lastUploadAt` is
-// the feed file's upload time (ISO) or null if that feed has never been seen.
 export const IngestFeedStatusSchema = z.object({
   feed: z.string(),
   label: z.string(),
@@ -121,20 +104,15 @@ export const PendingSignupNotificationSchema = z.object({
 });
 export type PendingSignupNotification = z.infer<typeof PendingSignupNotificationSchema>;
 
-// Admin server-action return shape (optional warning on success).
 export type AdminActionResult =
   | { ok: true; warning?: string }
   | { ok: false; error: string };
 
-// ── Mutation request bodies ─────────────────────────────────────────────────
 export const DeclineAccountBodySchema = z.object({
   reason: z.string().nullable().optional()
 });
 export type DeclineAccountBody = z.infer<typeof DeclineAccountBodySchema>;
 
-// Account pricing settings saved together from the admin account screen: the
-// credit limit ($) plus the three markup percentages. Bundled in one body so a
-// single save diffs every field and sends one "settings changed" email.
 export const MarkupUpdateBodySchema = z.object({
   creditLimitUsd: z.number().nullable(),
   gemstoneMarkupPct: z.number().nullable(),

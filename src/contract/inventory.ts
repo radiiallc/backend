@@ -1,17 +1,5 @@
 import { z } from "zod";
 
-// ────────────────────────────────────────────────────────────────────────────
-// Catalog wire contract — the single shared definition of the inventory request
-// params and response DTOs that flow between apps/api and apps/portal.
-//
-// Response shapes are zod schemas (so both sides share inferred types and the
-// portal can validate at the boundary). Request params keep the lenient,
-// battle-tested hand parsers below — moved verbatim from the portal so the
-// query→params behavior is byte-identical to the pre-split live portal.
-// ────────────────────────────────────────────────────────────────────────────
-
-// ── Diamonds ────────────────────────────────────────────────────────────────
-
 export const DiamondOriginSchema = z.enum(["Lab", "Natural"]);
 export type DiamondOrigin = z.infer<typeof DiamondOriginSchema>;
 
@@ -132,8 +120,6 @@ export const DiamondFilterBoundsSchema = z.object({
 });
 export type DiamondFilterBounds = z.infer<typeof DiamondFilterBoundsSchema>;
 
-// ── Gemstones ───────────────────────────────────────────────────────────────
-
 export const GEMSTONE_SORT_KEYS = [
   "newest",
   "price-asc",
@@ -242,20 +228,12 @@ export const GemstoneFilterBoundsSchema = z.object({
 });
 export type GemstoneFilterBounds = z.infer<typeof GemstoneFilterBoundsSchema>;
 
-// ── Shared ──────────────────────────────────────────────────────────────────
-
 export const InventoryCountsSchema = z.object({
   natural: z.number(),
   lab: z.number(),
   gemstones: z.number()
 });
 export type InventoryCounts = z.infer<typeof InventoryCountsSchema>;
-
-// ── Query (de)serialization ─────────────────────────────────────────────────
-// `parse*` turn a URL query bag (Next.js searchParams OR Express req.query) into
-// typed params; `*ToQuery` build the URLSearchParams the client sends. Moved
-// verbatim from the portal's features/catalog/*-search-params.ts so the wire
-// format is identical on both ends.
 
 type QueryValue = string | string[] | undefined;
 type QueryBag = Record<string, QueryValue>;

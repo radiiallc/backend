@@ -19,9 +19,6 @@ function normaliseEmail(raw: string): string {
   return raw.trim().toLowerCase();
 }
 
-// ── Credential check (ported from the NextAuth Credentials.authorize) ─────────
-// APPROVED-gate preserved: only APPROVED users authenticate; wrong password or
-// any non-approved status returns null. argon2 verify against the stored hash.
 export async function verifyCredentials(
   emailRaw: string,
   password: string
@@ -44,7 +41,6 @@ export async function verifyCredentials(
   };
 }
 
-// ── Password reset (ported verbatim; existence-leak-safe — Gate §10) ──────────
 export type RequestPasswordResetResult = { ok: true } | { ok: false; error: string };
 export type ResetPasswordResult = { ok: true } | { ok: false; error: string };
 
@@ -71,10 +67,8 @@ export async function requestPasswordReset(emailRaw: string): Promise<RequestPas
       const firstName = user.fullName?.trim().split(/\s+/)[0] ?? "there";
       await sendPasswordResetEmail({ email: user.email, firstName, resetUrl });
     } catch {
-      // Swallow — never reveal whether the address exists or that send failed.
     }
   } else {
-    // Burn comparable time so timing doesn't leak account existence.
     await hash(randomBytes(32).toString("base64url"));
   }
 
@@ -151,7 +145,6 @@ export async function validateResetToken(tokenId: string, token: string): Promis
   return verify(tokenRow.tokenHash, token);
 }
 
-// ── Signup (ported; Next-only revalidatePath dropped — admin frontend refetches) ─
 const signupSchema = z
   .object({
     firstName: z.string().trim().min(1, "First name is required"),

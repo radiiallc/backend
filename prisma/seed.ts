@@ -54,9 +54,6 @@ async function main() {
     }
   });
 
-  // A Bill In / Memo In cannot be saved without a vendor, and the CSV import
-  // lands its rows on one — so a bare dev DB can't exercise the import path at
-  // all. Seed one so the flow is testable straight after `npm run seed:dev`.
   await prisma.vendor.upsert({
     where: { name: "Demo Vendor" },
     update: {},

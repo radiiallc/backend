@@ -16,8 +16,6 @@ import { fetchSkylabStock } from "./skylab-api";
 import { parseSkylabStock } from "./skylab-adapter";
 
 const BULK_CHUNK = 800;
-// Don't enforce the low-water-mark guard until the DB holds a real baseline —
-// avoids blocking the first api-mode load or a genuinely tiny catalog.
 const SKYLAB_BASELINE_MIN = 200;
 
 const PARALLEL_CHUNKS_PER_FILE = 4;
@@ -45,7 +43,7 @@ const RETRYABLE_PG_CODES = new Set([
   "57P03",
   "57P01"
 ]);
-const WRITE_RETRY_MAX_ATTEMPTS = 6; // 1 initial try + 5 retries
+const WRITE_RETRY_MAX_ATTEMPTS = 6;
 const WRITE_RETRY_BASE_MS = 500;
 const WRITE_RETRY_CAP_MS = 8_000;
 
@@ -327,14 +325,6 @@ async function ingestSkylabApiEntry(): Promise<IngestEntry> {
     );
   }
 
-  // Low-water-mark guard (partial-batch protection). The 0-row check above only
-  // catches a fully-empty pull; a *partial* batch — the 2h regen momentarily
-  // serving a fraction of the book with HTTP 200 — passes it, yet the global
-  // stale sweep would then flip every unseen Skylab stone to unavailable. Compare
-  // this snapshot against what we currently show available (the last good sweep's
-  // level, read straight from the DB) and abort if it collapsed. Runs BEFORE the
-  // upsert below, so the count is the pre-run baseline. Skipped when there's no
-  // meaningful baseline (first/bootstrap load, tiny catalog).
   const availableInDb = await prisma.diamond.count({
     where: { vendor: "Skylab", isAvailable: true }
   });
@@ -464,13 +454,7 @@ async function evaluateAndAlert(outcome: IngestOutcome, rowsParsedTotal: number)
   if (isAlert) {
     const consecutiveFailures = priorFailures + 1;
 
-    // Hold the first N-1 failures of a streak. The feed re-runs every 15 minutes,
-    // and a transient vendor failure (a Skylab 5xx, a momentary FTP drop) is
-    // already fixed by the time anyone opens the email — so waiting for a second
-    // consecutive failure is what separates "needs attention" from noise. Runs are
-    // still recorded in IngestRun either way, so nothing is hidden from history.
     if (consecutiveFailures < minFailures) {
-      // eslint-disable-next-line no-console
       console.warn(
         `[ingest] alert-worthy run ${consecutiveFailures}/${minFailures} — ` +
           `holding email pending the next run: ${reason}`
@@ -482,7 +466,7 @@ async function evaluateAndAlert(outcome: IngestOutcome, rowsParsedTotal: number)
     const throttleElapsed =
       !lastAlertAt || Date.now() - lastAlertAt.getTime() >= throttleMs;
     if (alertActive && !throttleElapsed) {
-      await setAlertState({ consecutiveFailures }); // already alerted recently
+      await setAlertState({ consecutiveFailures });
       return;
     }
 
@@ -515,7 +499,6 @@ async function evaluateAndAlert(outcome: IngestOutcome, rowsParsedTotal: number)
     return;
   }
 
-  // Healthy run that ends a held (never-emailed) streak — clear it silently.
   if (priorFailures > 0) await setAlertState({ consecutiveFailures: 0 });
 }
 

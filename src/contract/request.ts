@@ -1,11 +1,5 @@
 import { z } from "zod";
 
-// ────────────────────────────────────────────────────────────────────────────
-// Requests wire contract — memo/invoice requests buyers submit from their cart.
-// Enums mirror the Prisma enums (Request*); kept as zod enums here so the
-// contract stays free of a Prisma dependency.
-// ────────────────────────────────────────────────────────────────────────────
-
 export const RequestTypeSchema = z.enum(["MEMO", "INVOICE"]);
 export type RequestType = z.infer<typeof RequestTypeSchema>;
 
@@ -21,9 +15,6 @@ export type RequestStatus = z.infer<typeof RequestStatusSchema>;
 export const RequestItemStatusSchema = z.enum(["PENDING", "APPROVED", "REJECTED"]);
 export type RequestItemStatus = z.infer<typeof RequestItemStatusSchema>;
 
-// ── Submit (cart -> request) ────────────────────────────────────────────────
-// Identical to the pre-split server-action validator, incl. the note transform
-// (empty/whitespace -> null).
 export const SubmitRequestBodySchema = z.object({
   type: RequestTypeSchema,
   cartItemIds: z.array(z.string().min(1)).min(1, "Select at least one item to submit"),
@@ -40,7 +31,6 @@ export type SubmitRequestResult =
   | { ok: true; requestId: string; reference: string; warning?: string }
   | { ok: false; error: string };
 
-// ── Buyer read DTOs ─────────────────────────────────────────────────────────
 export const BuyerRequestListItemSchema = z.object({
   id: z.string(),
   reference: z.string(),
@@ -55,8 +45,6 @@ export type BuyerRequestListItem = z.infer<typeof BuyerRequestListItemSchema>;
 
 export const BuyerRequestDetailItemSchema = z.object({
   id: z.string(),
-  // Inventory item id (gemstone or diamond) for linking to the item detail page.
-  // Null when the original item can no longer be resolved (legacy rows).
   itemId: z.string().nullable(),
   sku: z.string(),
   status: RequestItemStatusSchema,

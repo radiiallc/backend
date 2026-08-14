@@ -2,18 +2,10 @@ import { Prisma, prisma } from "@/db";
 import { clarityRank } from "@/domain";
 import type { FeedDiamond, FeedDiamondsPage } from "@/contract";
 
-// Port of the Sherry outbound-feed Prisma read (portal /feeds/turtle.csv). The
-// markup, per-vendor post-filter, CSV shaping and token auth stay in the portal
-// route; only the cursor-paginated DB read moves here. `certUrl` is replaced by
-// a `hasCert` boolean so the vendor host never crosses the wire (Gate §8) — the
-// portal builds the same-domain cert proxy URL from the id.
-
 const MAX_NATURAL_WEIGHT = 5.0;
 const MIN_NATURAL_CLARITY_RANK = clarityRank("SI2")!;
 const DEFAULT_PAGE_SIZE = 2000;
 
-// Same where-clause the portal feed used: all available Skylab (lab) rows, plus
-// Disons (natural) rows under the weight ceiling and at/above the clarity floor.
 const FEED_WHERE: Prisma.DiamondWhereInput = {
   isAvailable: true,
   OR: [
@@ -107,7 +99,6 @@ export async function getFeedDiamondsPage(
     basePricePerCtUsd: num(r.basePricePerCtUsd)
   }));
 
-  // nextCursor is the last row's id when the page was full (more may remain).
   const nextCursor = batch.length === take ? batch[batch.length - 1].id : null;
   return { rows, nextCursor };
 }

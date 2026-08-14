@@ -1,5 +1,3 @@
-// Parcel draw-down smoke — exercises the whole draw/reverse cycle against
-// radiia_dev at the service layer. Run: npm run smoke:parcel
 import { prisma } from "@/db";
 import {
   createOutboundDocument,
@@ -42,7 +40,6 @@ async function balance(id: string): Promise<{ ct: number | null; qty: number | n
 }
 
 async function main(): Promise<void> {
-  // ── fixtures ──────────────────────────────────────────────────────────────
   const user = await prisma.user.findFirstOrThrow({ where: { role: "ADMIN" } });
   const vendor = await prisma.vendor.upsert({
     where: { name: "SMOKE Parcel Vendor" },
@@ -92,7 +89,6 @@ async function main(): Promise<void> {
       user.id
     );
 
-  // ── 1. opening balance ────────────────────────────────────────────────────
   console.log("\n[1] opening balance");
   const p = await mkParcel(16.76, 49, 500);
   let b = await balance(p);
@@ -104,7 +100,6 @@ async function main(): Promise<void> {
   const sb = await balance(single);
   check("single stone gets NO balance (stays atomic)", sb.ct === null && sb.qty === null, sb);
 
-  // ── 2. the core draw ──────────────────────────────────────────────────────
   console.log("\n[2] partial draw");
   const d1 = await inv([{ inventoryItemId: p, caratWeight: 0.4, quantity: 2 }]);
   check("0.40 ct draw succeeds", d1.ok, d1.ok ? undefined : d1.error);
@@ -119,7 +114,6 @@ async function main(): Promise<void> {
     check("line carries the drawn piece count", Number(line?.quantity) === 2, line);
   }
 
-  // ── 3. rejections (nothing may be half-written) ────────────────────────────
   console.log("\n[3] rejections");
   const over = await inv([{ inventoryItemId: p, caratWeight: 100 }]);
   check("over-draw rejected", !over.ok, over.ok ? "accepted!" : over.error);
@@ -150,7 +144,6 @@ async function main(): Promise<void> {
     qtyOnCtOnly.ok ? "accepted!" : qtyOnCtOnly.error
   );
 
-  // ── 4. drawing the lot to zero ────────────────────────────────────────────
   console.log("\n[4] draw to zero");
   const d2 = await inv([{ inventoryItemId: p, caratWeight: 16.36, quantity: 47 }]);
   check("final draw succeeds", d2.ok, d2.ok ? undefined : d2.error);
@@ -162,7 +155,6 @@ async function main(): Promise<void> {
   const afterSold = await inv([{ inventoryItemId: p, caratWeight: 0.1 }]);
   check("cannot draw from a SOLD parcel", !afterSold.ok, afterSold.ok ? "accepted!" : afterSold.error);
 
-  // ── 5. void = reverse ─────────────────────────────────────────────────────
   console.log("\n[5] void reverses the draw");
   if (d2.ok) {
     const v = await voidDocument(d2.document.id, user.id);
@@ -177,7 +169,6 @@ async function main(): Promise<void> {
     check("double void rejected", !twice.ok, twice.ok ? "accepted!" : twice.error);
   }
 
-  // ── 6. void a whole-item invoice (regression) ─────────────────────────────
   console.log("\n[6] whole-item regression");
   const legacy = await createOutboundDocument(
     { type: "INVOICE", clientId: client.id, inventoryItemIds: [single] } as never,
@@ -198,7 +189,6 @@ async function main(): Promise<void> {
     check("single stone back to IN_STOCK", ss.status === "IN_STOCK", ss);
   }
 
-  // ── 7. adjust / write-off ─────────────────────────────────────────────────
   console.log("\n[7] adjust remaining");
   const dust = await mkParcel(5, 20, 250);
   await inv([{ inventoryItemId: dust, caratWeight: 4.98, quantity: 20 }]);
@@ -228,7 +218,6 @@ async function main(): Promise<void> {
   const adjSingle = await adjustParcelRemaining(single, { remainingCt: 1, reason: "x" }, user.id);
   check("adjusting a non-parcel rejected", !adjSingle.ok, adjSingle.ok ? "accepted!" : adjSingle.error);
 
-  // ── 8. correcting a typo before anything sells ────────────────────────────
   console.log("\n[8] weight correction");
   const typo = await mkParcel(100, 10, 200);
   await updateInventoryItem(typo, { stone: { weightCt: 10 } } as never);
@@ -241,11 +230,6 @@ async function main(): Promise<void> {
   b = await balance(drawn);
   check("part-drawn parcel: weight edit does NOT reset the balance", b.ct === 15, b);
 
-  // ── 9. the memo lifecycle (parcels on a Memo Out) ─────────────────────────
-  // The whole point is that carats are conserved: a memo takes them, a return
-  // gives them back, and the invoice that settles a memo must NOT take them a
-  // second time. Each step below re-reads the balance rather than trusting the
-  // return value, because the bug worth catching here is a double write.
   console.log("\n[9] memo lifecycle");
   const memoOut = (lines: unknown[], clientId = client.id) =>
     createOutboundDocument({ type: "MEMO_OUT", clientId, lines } as never, user.id);
@@ -261,7 +245,6 @@ async function main(): Promise<void> {
     check("memo line prices the slice (5 x 400 = 2000)", m1.document.lineItems[0]?.totalPrice === 2000, m1.document.lineItems[0]);
   }
 
-  // Returning it gives exactly that slice back.
   if (m1.ok) {
     const ret = await recordMemoReturn(m1.document.id, {} as never, user.id);
     check("memo return succeeds", ret.ok, ret.ok ? undefined : ret.error);
@@ -275,7 +258,6 @@ async function main(): Promise<void> {
     check("no IN_STOCK -> IN_STOCK noise in the audit trail", noise === 0, noise);
   }
 
-  // Memo again, then SELL the slice: the invoice must settle, not re-draw.
   const m2 = await memoOut([{ inventoryItemId: mp, caratWeight: 6 }]);
   check("second memo draws again", m2.ok, m2.ok ? undefined : m2.error);
   b = await balance(mp);
@@ -297,7 +279,6 @@ async function main(): Promise<void> {
     check("the memo auto-closes once nothing is out", memoDoc.status === "CLOSED", memoDoc.status);
   }
 
-  // A client holding a slice buying MORE must draw fresh, not be refused.
   const m3 = await memoOut([{ inventoryItemId: mp, caratWeight: 3 }]);
   check("third memo (3 ct of the 14 left)", m3.ok, m3.ok ? undefined : m3.error);
   const extra = await inv([{ inventoryItemId: mp, caratWeight: 2 }]);
@@ -313,13 +294,11 @@ async function main(): Promise<void> {
     check("and stays OPEN", still.status === "OPEN", still.status);
   }
 
-  // Another client's slice of the SAME lot must not be swept up.
   const client2 =
     (await prisma.company.findFirst({ where: { name: "SMOKE Parcel Client 2" } })) ??
     (await prisma.company.create({ data: { name: "SMOKE Parcel Client 2" } }));
   const m4 = await memoOut([{ inventoryItemId: mp, caratWeight: 4 }], client2.id);
   check("a second client can memo the same lot", m4.ok, m4.ok ? undefined : m4.error);
-  // Client 1 settles their 3 ct; client 2's 4 ct must be left alone.
   const settle1 = await inv([{ inventoryItemId: mp, caratWeight: 3 }]);
   check("client 1 settles their own slice", settle1.ok, settle1.ok ? undefined : settle1.error);
   if (m4.ok) {
@@ -334,9 +313,6 @@ async function main(): Promise<void> {
   check("settling client 1 moved no stock (still 5 ct)", b.ct === 5, b);
   check("lot is IN_STOCK while client 2 still holds a slice", b.status === "IN_STOCK", b);
 
-  // ── cleanup ───────────────────────────────────────────────────────────────
-  // Leave radiia_dev as we found it, so the smoke is repeatable and does not
-  // slowly fill the dev DB with fixtures.
   const mine = await prisma.inventoryItem.findMany({
     where: { vendorId: vendor.id },
     select: { id: true }
@@ -355,7 +331,6 @@ async function main(): Promise<void> {
   await prisma.vendor.delete({ where: { id: vendor.id } }).catch(() => undefined);
   console.log(`\ncleaned up ${mineIds.length} item(s), ${docIds.length} doc(s)`);
 
-  // ── summary ───────────────────────────────────────────────────────────────
   console.log(`\n${"=".repeat(52)}`);
   console.log(`${pass}/${pass + fail} passed`);
   if (fail > 0) {

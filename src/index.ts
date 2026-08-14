@@ -17,17 +17,10 @@ import { requestsRouter } from "./routes/requests";
 import { startIngestScheduler, startPgStatStatementsMaintenance } from "./scheduler";
 
 const app = express();
-// CORS with credentials so the browser frontends can set/send the session
-// cookie. Reflects only allow-listed origins (never `*` with credentials).
 app.use(
   cors({
     origin(origin, cb) {
-      // allow same-origin / non-browser (no Origin header) + allow-listed origins
       if (!origin || env.allowedOrigins.includes(origin)) return cb(null, true);
-      // Log the rejected origin so a misconfigured ALLOWED_ORIGINS surfaces in
-      // the host logs instead of an opaque 500 + a generic "can't reach server"
-      // in the browser. Show the current allow-list to make the fix obvious.
-      // eslint-disable-next-line no-console
       console.warn(
         `[cors] rejected origin ${origin}; allowed: ${env.allowedOrigins.join(", ") || "(none)"}`
       );
@@ -36,17 +29,10 @@ app.use(
     credentials: true
   })
 );
-// 20mb, not the 100kb default: the inventory importer posts an uploaded .xlsx as
-// base64 in the JSON body (same authenticated path as every other admin call),
-// and base64 adds a third on top of the file. Jennifer's sheets are tens of KB,
-// so this is headroom rather than a target.
 app.use(express.json({ limit: "20mb" }));
 app.use(cookieParser());
 app.use(attachUser);
 
-// Health / keep-warm — no auth. Warms the Prisma connection pool with a trivial
-// query so the first real request to a cold instance doesn't pay connect cost.
-// Mirrors the portal's /api/health keep-warm ([[project-2026-06-17-cold-start-not-db]]).
 app.get("/health", async (_req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
@@ -56,12 +42,10 @@ app.get("/health", async (_req, res) => {
   }
 });
 
-// Liveness only (no DB) — for uptime pingers that must not touch the pool.
 app.get("/health/live", (_req, res) => {
   res.json({ ok: true, service: "api", ts: new Date().toISOString() });
 });
 
-// Feature routers
 app.use("/auth", authRouter);
 app.use("/catalog", catalogRouter);
 app.use("/cart", cartRouter);
@@ -74,18 +58,12 @@ app.use("/cron", cronRouter);
 app.use("/internal", internalRouter);
 
 const server = app.listen(env.port, () => {
-  // eslint-disable-next-line no-console
   console.log(`[api] listening on :${env.port} (${env.nodeEnv})`);
-  // Drive ingest from this always-on server instead of the unreliable GitHub
-  // Actions cron (which was dropping ~80% of scheduled runs).
   startIngestScheduler();
-  // Keep pg_stat_statements from bloating Supabase's metrics scraper (the cause of
-  // the climbing CPU); auto-clears any pre-existing bloat on first run.
   startPgStatStatementsMaintenance();
 });
 
 function shutdown(signal: string) {
-  // eslint-disable-next-line no-console
   console.log(`[api] ${signal} received, shutting down`);
   server.close(() => {
     void prisma.$disconnect().finally(() => process.exit(0));

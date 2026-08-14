@@ -45,7 +45,6 @@ function bool(raw: string): boolean | undefined {
   return undefined;
 }
 
-// Strip $, thousands separators and spaces; parse to a finite number or null.
 function num(raw: string): number | null {
   if (raw == null) return null;
   const cleaned = raw.replace(/[$,\s]/g, "");
@@ -58,12 +57,6 @@ function str(raw: string): string | undefined {
   return t === "" ? undefined : t;
 }
 
-// Fantasy prices wholesale and retail as a LINE TOTAL, while we store per carat.
-// Divide rather than make her add a formula column to every export.
-//
-// A zero total is Fantasy's empty (its "Total Retail Price" is 0 on every row of
-// both samples), so it stays null instead of asserting the stones are worth
-// nothing — a real zero price would be indistinguishable from an unfilled one.
 function perCtFromTotal(total: number | null, weightCt: number | null): number | null {
   if (total === null || total <= 0) return null;
   if (weightCt === null || weightCt <= 0) return null;
@@ -74,7 +67,7 @@ function toSubtype(raw: string): "SINGLE" | "PAIR" | "PARCEL" {
   const s = (raw ?? "").toLowerCase();
   if (s.includes("parcel")) return "PARCEL";
   if (s.includes("pair")) return "PAIR";
-  return "SINGLE"; // default (Lot Type is nominally required; be forgiving)
+  return "SINGLE";
 }
 function isClosedLine(raw: string): boolean {
   return /^(closed|cancell?ed|void(ed)?|inactive)$/i.test((raw ?? "").trim());
@@ -103,7 +96,6 @@ const HEADER_SIGNALS = new Set([
   "metal", "jewelrytype", "materialtype", "description"
 ]);
 
-// Only the top of the sheet: past this, a "header" is a mis-scored data row.
 const HEADER_SCAN_ROWS = 10;
 
 export function findHeaderRow(records: string[][]): number {
@@ -122,7 +114,6 @@ export function findHeaderRow(records: string[][]): number {
   return bestScore >= 2 ? best : 0;
 }
 
-// A single data row's header→value accessor: first matching alias wins.
 type RowGet = (aliases: string[]) => string;
 
 function makeGet(headerIndex: Map<string, number>, row: string[]): RowGet {
@@ -138,8 +129,6 @@ function makeGet(headerIndex: Map<string, number>, row: string[]): RowGet {
   };
 }
 
-// Build the raw (pre-validation) inbound item for a row, by category. Returns a
-// plain object; the caller validates it against the zod schema.
 function buildRawItem(category: ImsCsvCategory, get: RowGet): Record<string, unknown> {
   const core: Record<string, unknown> = {
     sku: str(get(["radiiasku", "sku", "stock"])),
@@ -166,8 +155,8 @@ function buildRawItem(category: ImsCsvCategory, get: RowGet): Record<string, unk
       fluorescence: str(get(["fluo", "fluorescence", "fluor"])),
       lengthMm: num(get(["length", "m1"])),
       widthMm: num(get(["width", "m2"])),
-      heightMm: num(get(["depth", "height", "m3"])), // "Depth" (mm) among the mm dims = physical height
-      depthPct: num(get(["depthpct", "depthpercent"])), // distinct "Depth %" column
+      heightMm: num(get(["depth", "height", "m3"])),
+      depthPct: num(get(["depthpct", "depthpercent"])),
       tablePct: num(get(["tablepct", "tablepercent", "table"])),
       ratio: num(get(["ratio"])),
       lab: str(get(["lab"])),
@@ -217,12 +206,11 @@ function buildRawItem(category: ImsCsvCategory, get: RowGet): Record<string, unk
         wholesalePrice: num(get(["wholesaleprice", "wholesale"])),
         retailPrice: num(get(["retailprice", "retail"])),
         brand: str(get(["brand"])),
-        photo1Url: str(get(["image1", "image", "photo1", "photo"])) // one photo, no video (Jennifer 07-23)
+        photo1Url: str(get(["image1", "image", "photo1", "photo"]))
       }
     };
   }
 
-  // other materials
   return {
     itemType: "OTHER_MATERIAL",
     ...core,
@@ -236,12 +224,11 @@ function buildRawItem(category: ImsCsvCategory, get: RowGet): Record<string, unk
       mm: num(get(["mm"])),
       cost: num(get(["cost"])),
       wholesalePrice: num(get(["wholesaleprice", "wholesale"])),
-      photo1Url: str(get(["image1", "image", "photo1", "photo"])) // one photo, no video (Jennifer 07-23)
+      photo1Url: str(get(["image1", "image", "photo1", "photo"]))
     }
   };
 }
 
-// Turn a failed zod parse into one friendly, row-scoped sentence.
 function friendlyError(issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey>; message: string }>): string {
   const first = issues[0];
   if (!first) return "Invalid row";
@@ -255,8 +242,6 @@ function friendlyError(issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey>;
   return `${label} ${msg}`;
 }
 
-// A whole-file failure, shaped like a normal result so the preview can render it
-// the same way as a bad row instead of the caller special-casing an exception.
 function fileError(category: ImsCsvCategory, error: string, sheetName: string | null = null): ImsParseInboundCsvResult {
   return {
     category,
@@ -271,9 +256,6 @@ function fileError(category: ImsCsvCategory, error: string, sheetName: string | 
   };
 }
 
-// The shared core: a string grid → validated inbound items. The header is found
-// rather than assumed (see findHeaderRow); anything above it is preamble.
-// CSV text and .xlsx cells both arrive here, so the two formats can't drift.
 function parseRecords(
   category: ImsCsvCategory,
   records: string[][],
@@ -296,8 +278,6 @@ function parseRecords(
     const key = normalizeHeader(h);
     if (key && !headerIndex.has(key)) headerIndex.set(key, i);
     else if (key) collidedColumns.push(i);
-    // First non-colliding column wins each alias, so the real Stone Type column
-    // keeps "stonetype" and a mislabeled Lot Type column still claims "lottype".
     for (const alias of hintAliases(h)) {
       if (!headerIndex.has(alias)) headerIndex.set(alias, i);
     }
@@ -311,14 +291,9 @@ function parseRecords(
 
   dataRows.forEach((row, i) => {
     const rowNumber = i + 1;
-    // Skip a row that is entirely blank (some exports pad trailing rows).
     if (row.every((c) => (c ?? "").trim() === "")) return;
 
     const get = makeGet(headerIndex, row);
-    // A Fantasy export carries settled lines alongside live ones (Jennifer
-    // 2026-08-12: "I'm fine with closed not being imported, because it means
-    // it's no longer active anyway"). Silently, and only when the column is
-    // present: a closed line is not a row she needs to see an error about.
     if (isClosedLine(get(["doclinestatus", "linestatus"]))) {
       closedCount++;
       return;
@@ -343,8 +318,6 @@ function parseRecords(
     okCount: rows.length - errorCount,
     errorCount,
     closedCount,
-    // Set by annotateRestocks once the parse is checked against live inventory;
-    // a bare parse knows nothing about what is already in stock.
     restockCount: 0,
     rows,
     items
@@ -367,9 +340,6 @@ export function parseInventoryCsv(category: ImsCsvCategory, csvText: string): Im
   return parseRecords(category, records, null);
 }
 
-// Excel's "Unicode Text" export is UTF-16LE; everything else is UTF-8 (whose BOM
-// csv-parse strips itself). Sniffing the BOM keeps a wrongly-saved CSV readable
-// instead of failing on a header full of NUL bytes.
 function decodeText(bytes: Buffer): string {
   if (bytes.length > 1 && bytes[0] === 0xff && bytes[1] === 0xfe) return bytes.toString("utf16le", 2);
   if (bytes.length > 1 && bytes[0] === 0xfe && bytes[1] === 0xff) {
@@ -378,11 +348,6 @@ function decodeText(bytes: Buffer): string {
   return bytes.toString("utf8");
 }
 
-/**
- * Parse an uploaded file, whatever it is. Routes on content rather than the file
- * name — a workbook renamed .csv is still a workbook — and falls back to CSV so
- * an oddly-named text export still imports.
- */
 export function parseInventoryUpload(category: ImsCsvCategory, bytes: Buffer): ImsParseInboundCsvResult {
   if (bytes.length === 0) return fileError(category, "That file is empty.");
 

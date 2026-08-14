@@ -2,11 +2,6 @@ import { prisma } from "@/db";
 import { resolveStillImageUrl, sanitizeMediaUrl } from "@/domain";
 import type { ShareItem } from "@/contract";
 
-// Port of the portal /share page's Prisma read. Returns the stones for a set of
-// ids (diamonds + gemstones), with media resolved and vendor host already
-// stripped at ingest. No prices (share prices ride in the URL token) and no
-// certUrl (Gate §8 — never leaves the server).
-
 function toNum(value: unknown): number | null {
   if (value === null || value === undefined) return null;
   const n = Number(value);
@@ -57,6 +52,5 @@ export async function getShareItems(ids: string[]): Promise<ShareItem[]> {
     });
   }
 
-  // Preserve the caller's id order; drop ids that no longer resolve.
   return ids.map((id) => byId.get(id)).filter((s): s is ShareItem => Boolean(s));
 }

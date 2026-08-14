@@ -4,8 +4,6 @@ import type { ImsDocument, ImsDocumentQuery } from "@/contract";
 
 import { IMS_DOC_INCLUDE, prismaDocToDto } from "./documents.mappers";
 
-// Types that read as direction "in". Kept here (not exported from constants) so
-// the where-builder can translate a direction filter into a type filter.
 const INBOUND_TYPES: PrismaDocumentType[] = ["MEMO_IN", "BILL_IN", "BRAND_INVENTORY_IN"];
 
 function buildDocumentWhere(query: ImsDocumentQuery): Prisma.DocumentWhereInput {

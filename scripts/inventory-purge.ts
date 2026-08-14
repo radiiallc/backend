@@ -1,20 +1,3 @@
-// Inspect / delete inventory items by SKU.
-//
-// There is no DELETE route on /ims by design — inventory leaves stock through a
-// document, never by vanishing. That leaves no way to clear rows that should
-// never have existed (a mistyped test import, goods received under the wrong
-// vendor), which is what this script is for. It is deliberately a script and not
-// an endpoint: deleting stock is not a routine operation and should not be one
-// click away in the admin.
-//
-// Usage:
-//   npm run purge:inspect:prod -- SKU-1 SKU-2      (read-only; always run first)
-//   npm run purge:delete:prod  -- SKU-1 SKU-2 --yes
-//
-// Refuses to delete anything with history that implies the goods really moved:
-// a line on a document that is not a plain inbound receipt, or a parcel that has
-// already been drawn down. Those are ledger facts, and unpicking them silently
-// would be worse than the stray row.
 
 import { prisma } from "@/db";
 
@@ -95,8 +78,6 @@ async function main() {
       }
     }
 
-    // A parcel that has been partly invoiced is a live position, whatever its
-    // document trail looks like.
     if (item.stone && item.itemSubtype === "PARCEL" && item.stone.remainingCt !== null) {
       const original = Number(item.stone.weightCt.toString());
       const remaining = Number(item.stone.remainingCt.toString());
@@ -136,9 +117,6 @@ async function main() {
     return;
   }
 
-  // Detail rows cascade on the item (schema onDelete: Cascade). Line items and
-  // status history do not, so they go first — and any inbound document left with
-  // no lines at all goes too, because an empty bill is not a record of anything.
   const itemIds = items.map((i) => i.id);
   const touchedDocIds = Array.from(
     new Set(items.flatMap((i) => i.lineItems.map((l) => l.documentId)))

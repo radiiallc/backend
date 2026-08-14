@@ -25,25 +25,17 @@ import {
 
 export const catalogRouter = Router();
 
-// Catalog reads mirror the portal's authed buyer pages: companyId comes from the
-// session (markup is applied per company; null company => base prices). All routes
-// require an authenticated user, matching the pre-split middleware that redirected
-// anonymous visitors away from catalog pages.
 catalogRouter.use(requireAuth);
 
-// Express 4 doesn't catch async handler rejections — wrap so they 500 cleanly.
 function wrap(handler: (req: Request, res: Response) => Promise<void>) {
   return (req: Request, res: Response): void => {
     handler(req, res).catch((err) => {
-      // eslint-disable-next-line no-console
       console.error("[catalog] handler error", err);
       if (!res.headersSent) res.status(500).json({ error: "Internal error" });
     });
   };
 }
 
-// Express req.query is ParsedQs; the portal forwards flat string/CSV params, so
-// the shared parser (which already handles string | string[]) accepts it as-is.
 function queryBag(req: Request): Record<string, string | string[] | undefined> {
   return req.query as unknown as Record<string, string | string[] | undefined>;
 }
@@ -52,7 +44,6 @@ function companyIdOf(req: Request): string | null {
   return req.user?.companyId ?? null;
 }
 
-// ── Diamonds ──────────────────────────────────────────────────────────────
 catalogRouter.get(
   "/diamonds",
   wrap(async (req, res) => {
@@ -80,7 +71,6 @@ catalogRouter.get(
   })
 );
 
-// Filtered match count (powers the live "N matches" badge on the search form).
 catalogRouter.get(
   "/diamonds/count",
   wrap(async (req, res) => {
@@ -95,7 +85,6 @@ catalogRouter.get(
   })
 );
 
-// ── Gemstones ─────────────────────────────────────────────────────────────
 catalogRouter.get(
   "/gemstones",
   wrap(async (req, res) => {
@@ -122,7 +111,6 @@ catalogRouter.get(
   })
 );
 
-// ── Shared ────────────────────────────────────────────────────────────────
 catalogRouter.get(
   "/counts",
   wrap(async (_req, res) => {
@@ -130,8 +118,6 @@ catalogRouter.get(
   })
 );
 
-// Single item by id — tries gemstone first, then diamond (mirrors the portal's
-// /items/[itemId] page resolution). Response is discriminated by `type`.
 catalogRouter.get(
   "/items/:id",
   wrap(async (req, res) => {
