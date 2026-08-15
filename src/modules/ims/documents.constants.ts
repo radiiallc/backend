@@ -43,19 +43,22 @@ export function partyKindOf(type: DocumentType): PartyKind {
   return CLIENT_PARTY_TYPES.includes(type) ? "client" : "vendor";
 }
 
-export type OutboundCreateType = "MEMO_OUT" | "INVOICE";
+export type OutboundCreateType = "MEMO_OUT" | "INVOICE" | "BRAND_INVENTORY_OUT";
 
 export const NEW_ITEM_STATUS: Record<OutboundCreateType, ItemStatus> = {
   MEMO_OUT: "ON_MEMO",
-  INVOICE: "SOLD"
+  INVOICE: "SOLD",
+  BRAND_INVENTORY_OUT: "RETURNED"
 };
 
 export const NEW_LINE_STATUS: Record<OutboundCreateType, LineStatus> = {
   MEMO_OUT: "ON_MEMO",
-  INVOICE: "SOLD"
+  INVOICE: "SOLD",
+  BRAND_INVENTORY_OUT: "RETURNED"
 };
 
 export const ALLOWED_SOURCE_STATUS: Record<OutboundCreateType, ItemStatus[]> = {
   MEMO_OUT: ["IN_STOCK", "RESERVED"],
-  INVOICE: ["IN_STOCK", "RESERVED", "ON_MEMO"]
+  INVOICE: ["IN_STOCK", "RESERVED", "ON_MEMO"],
+  BRAND_INVENTORY_OUT: ["IN_STOCK"]
 };

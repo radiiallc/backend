@@ -437,7 +437,7 @@ export const ImsIssueDateSchema = z
 
 export const ImsCreateDocumentSchema = z
   .object({
-    type: z.enum(["MEMO_OUT", "INVOICE"]),
+    type: z.enum(["MEMO_OUT", "INVOICE", "BRAND_INVENTORY_OUT"]),
     clientId: z.string().min(1),
     issueDate: ImsIssueDateSchema.optional(),
     inventoryItemIds: z.array(z.string().min(1)).min(1).optional(),

@@ -249,6 +249,17 @@ export async function createOutboundDocument(
     };
   }
 
+  if (type === "BRAND_INVENTORY_OUT") {
+    const notOwned = items.filter((i) => i.brandOwnerId !== input.clientId);
+    if (notOwned.length > 0) {
+      const detail = notOwned.map((i) => i.sku).join(", ");
+      return {
+        ok: false,
+        error: `Cannot return to this brand: item(s) not owned by them: ${detail}`
+      };
+    }
+  }
+
   const memoLineByItem = new Map<string, { id: string; caratWeight: number | null; quantity: number | null }>();
   if (type === "INVOICE") {
     const openMemoLines = await prisma.documentLineItem.findMany({
@@ -327,7 +338,7 @@ export async function createOutboundDocument(
       data: {
         type,
         documentNumber,
-        status: "OPEN",
+        status: type === "BRAND_INVENTORY_OUT" ? "CLOSED" : "OPEN",
         clientId: input.clientId,
         issueDate,
         dueDate,
@@ -449,8 +460,8 @@ const NOT_VOIDABLE: Partial<Record<PrismaDocumentType, string>> = {
     "A Return Memo Out is the record of stones coming back — it cannot be voided. Correct it by recording the movement again on a new document.",
   RETURN_MEMO_IN:
     "A Return Memo In is the record of stones going back to the vendor — it cannot be voided. Correct it by recording the movement again on a new document.",
-  BRAND_INVENTORY_IN: "Brand In documents cannot be voided yet.",
-  BRAND_INVENTORY_OUT: "Brand Out documents cannot be voided yet."
+  BRAND_INVENTORY_OUT:
+    "A Brand Out is the record of stones going back to the brand — it cannot be voided. Correct it by recording the movement again on a new document."
 };
 
 export async function voidDocument(
