@@ -28,7 +28,8 @@
     "skylab:reconcile": "dotenv -e .env.local -- tsx scripts/skylab-api.ts reconcile",
     "smoke:void": "dotenv -e .env.dev -- tsx scripts/void-smoke.ts",
     "smoke:brandin": "dotenv -e .env.dev -- tsx scripts/brand-in-smoke.ts",
-    "smoke:jewelry": "dotenv -e .env.dev -- tsx scripts/jewelry-lot-smoke.ts"
+    "smoke:jewelry": "dotenv -e .env.dev -- tsx scripts/jewelry-lot-smoke.ts",
+    "smoke:memoin": "dotenv -e .env.dev -- tsx scripts/memo-in-smoke.ts"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",

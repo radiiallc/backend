@@ -34,7 +34,6 @@ const CLIENT_PARTY_TYPES: readonly DocumentType[] = [
   "MEMO_OUT",
   "INVOICE",
   "RETURN_MEMO_OUT",
-  "RETURN_MEMO_IN",
   "BRAND_INVENTORY_IN",
   "BRAND_INVENTORY_OUT"
 ];

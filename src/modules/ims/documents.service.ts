@@ -172,12 +172,16 @@ function detailCostSnapshot(
   return { quantity: qty, caratWeight: null, unitPrice: cost, totalPrice: extend(cost, qty) };
 }
 
-async function recomputeMemoClose(tx: Prisma.TransactionClient, memoId: string): Promise<void> {
+async function recomputeMemoClose(
+  tx: Prisma.TransactionClient,
+  memoId: string,
+  openStatus: "ON_MEMO" | "IN_STOCK" = "ON_MEMO"
+): Promise<void> {
   const lines = await tx.documentLineItem.findMany({
     where: { documentId: memoId },
     select: { lineStatus: true }
   });
-  const stillOut = lines.filter((l) => l.lineStatus === "ON_MEMO").length;
+  const stillOut = lines.filter((l) => l.lineStatus === openStatus).length;
   const soldCount = lines.filter((l) => l.lineStatus === "SOLD").length;
   const returnedCount = lines.filter((l) => l.lineStatus === "RETURNED").length;
   const allResolved = stillOut === 0;
@@ -435,6 +439,27 @@ export async function createOutboundDocument(
       }
       for (const memoId of affectedMemoIds) {
         await recomputeMemoClose(tx, memoId);
+      }
+
+      const affectedMemoInIds = new Set<string>();
+      for (const s of snapshots) {
+        if (s.draw.isPartial && !s.draw.emptied) continue;
+        const memoInLine = await tx.documentLineItem.findFirst({
+          where: {
+            inventoryItemId: s.itemId,
+            lineStatus: "IN_STOCK",
+            document: { type: "MEMO_IN", status: "OPEN" }
+          }
+        });
+        if (!memoInLine) continue;
+        await tx.documentLineItem.update({
+          where: { id: memoInLine.id },
+          data: { lineStatus: "SOLD", resolvedByDocumentId: doc.id }
+        });
+        affectedMemoInIds.add(memoInLine.documentId);
+      }
+      for (const memoInId of affectedMemoInIds) {
+        await recomputeMemoClose(tx, memoInId, "IN_STOCK");
       }
     }
 
@@ -1138,6 +1163,151 @@ export async function recordMemoReturn(
     }
 
     await recomputeMemoClose(tx, memo.id);
+
+    return returnDoc.id;
+  });
+
+  const [returnDocument, updatedMemo] = await Promise.all([
+    prisma.document.findUniqueOrThrow({ where: { id: returnDocId }, include: IMS_DOC_INCLUDE }),
+    prisma.document.findUniqueOrThrow({ where: { id: memo.id }, include: IMS_DOC_INCLUDE })
+  ]);
+  return {
+    ok: true,
+    returnDocument: prismaDocToDto(returnDocument),
+    memo: prismaDocToDto(updatedMemo)
+  };
+}
+
+export async function recordVendorReturn(
+  memoId: string,
+  input: ImsRecordReturn,
+  actorId: string
+): Promise<RecordReturnResult> {
+  const memo = await prisma.document.findUnique({
+    where: { id: memoId },
+    include: { lineItems: true }
+  });
+  if (!memo) return { ok: false, error: "Memo not found" };
+  if (memo.type !== "MEMO_IN") return { ok: false, error: "Document is not a Memo In" };
+
+  const inStockLines = memo.lineItems.filter((l) => l.lineStatus === "IN_STOCK");
+  if (inStockLines.length === 0) {
+    return { ok: false, error: "This Memo In has nothing still available to return" };
+  }
+
+  const itemRows = await prisma.inventoryItem.findMany({
+    where: { id: { in: inStockLines.map((l) => l.inventoryItemId) } },
+    include: { stone: true, jewelry: true, material: true }
+  });
+  const itemById = new Map(itemRows.map((i) => [i.id, i]));
+
+  const availableLines = inStockLines.filter(
+    (l) => itemById.get(l.inventoryItemId)?.status === "IN_STOCK"
+  );
+
+  let targetLines = availableLines;
+  if (input.inventoryItemIds && input.inventoryItemIds.length > 0) {
+    const wanted = new Set(input.inventoryItemIds);
+    targetLines = availableLines.filter((l) => wanted.has(l.inventoryItemId));
+    const returnable = new Set(availableLines.map((l) => l.inventoryItemId));
+    const bad = input.inventoryItemIds.filter((id) => !returnable.has(id));
+    if (bad.length > 0) {
+      return {
+        ok: false,
+        error: `Not currently available to return on this Memo In: ${bad.join(", ")}`
+      };
+    }
+  }
+  if (targetLines.length === 0) return { ok: false, error: "No matching items to return" };
+
+  const snapshots: Array<{
+    lineId: string;
+    itemId: string;
+    currentStatus: ItemWithDetails["status"];
+    draw: ResolvedDraw;
+  }> = [];
+  for (const line of targetLines) {
+    const item = itemById.get(line.inventoryItemId)!;
+    const jewelryLot = item.itemType === "JEWELRY" && item.jewelry !== null;
+    const resolved = jewelryLot ? resolveJewelryDraw(item, {}) : resolveDraw(item, {});
+    if (!resolved.ok) return { ok: false, error: resolved.error };
+    snapshots.push({
+      lineId: line.id,
+      itemId: item.id,
+      currentStatus: item.status,
+      draw: resolved.draw
+    });
+  }
+
+  const returnDocId = await prisma.$transaction(async (tx) => {
+    const seq = await tx.documentSequence.upsert({
+      where: { type: "RETURN_MEMO_IN" },
+      create: { type: "RETURN_MEMO_IN", lastValue: 1001 },
+      update: { lastValue: { increment: 1 } }
+    });
+    const documentNumber = `${DOC_PREFIX.RETURN_MEMO_IN}-${seq.lastValue}`;
+
+    const returnDoc = await tx.document.create({
+      data: {
+        type: "RETURN_MEMO_IN",
+        documentNumber,
+        status: "CLOSED",
+        vendorId: memo.vendorId,
+        parentDocumentId: memo.id,
+        issueDate: new Date(),
+        createdById: actorId,
+        lineItems: {
+          create: snapshots.map((s) => {
+            const item = itemById.get(s.itemId)!;
+            const price = priceSnapshot(item, s.draw);
+            return {
+              inventoryItemId: s.itemId,
+              lineStatus: "RETURNED" as const,
+              quantity: price.quantity,
+              caratWeight: price.caratWeight,
+              unitPrice: price.unitPrice,
+              totalPrice: price.totalPrice
+            };
+          })
+        }
+      }
+    });
+
+    for (const s of snapshots) {
+      const { draw } = s;
+      if (draw.lot === "PARCEL" && draw.remainingAfterCt !== null) {
+        await tx.stoneDetail.update({
+          where: { inventoryItemId: s.itemId },
+          data: { remainingCt: draw.remainingAfterCt, remainingQty: draw.remainingAfterQty }
+        });
+      } else if (draw.lot === "JEWELRY" && draw.remainingAfterQty !== null) {
+        await tx.jewelryDetail.update({
+          where: { inventoryItemId: s.itemId },
+          data: { remainingQty: draw.remainingAfterQty }
+        });
+      }
+
+      await tx.documentLineItem.update({
+        where: { id: s.lineId },
+        data: { lineStatus: "RETURNED", resolvedByDocumentId: returnDoc.id }
+      });
+
+      await tx.inventoryItem.update({
+        where: { id: s.itemId },
+        data: { status: "RETURNED", visibleOnPortal: false }
+      });
+      await tx.itemStatusHistory.create({
+        data: {
+          inventoryItemId: s.itemId,
+          previousStatus: s.currentStatus,
+          newStatus: "RETURNED",
+          documentId: returnDoc.id,
+          changedById: actorId
+        }
+      });
+    }
+
+    await recomputeMemoClose(tx, memo.id, "IN_STOCK");
 
     return returnDoc.id;
   });
