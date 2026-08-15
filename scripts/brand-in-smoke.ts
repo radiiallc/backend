@@ -1,5 +1,5 @@
 import { prisma } from "@/db";
-import { createInboundDocument, createOutboundDocument } from "@/modules/ims/documents.service";
+import { createInboundDocument, createOutboundDocument, voidDocument } from "@/modules/ims/documents.service";
 import { ImsCreateInboundDocumentSchema, type ImsInboundItemInput } from "@/contract";
 
 let pass = 0;
@@ -34,7 +34,7 @@ function singleStone(sku: string, over: Record<string, unknown> = {}): ImsInboun
   } as unknown as ImsInboundItemInput;
 }
 
-const SKUS = ["SMOKE-BIN-1", "SMOKE-BIN-2", "SMOKE-BIN-3"];
+const SKUS = ["SMOKE-BIN-1", "SMOKE-BIN-2", "SMOKE-BIN-3", "SMOKE-BIN-4", "SMOKE-BIN-5"];
 
 async function cleanupItems(): Promise<void> {
   const stale = await prisma.inventoryItem.findMany({
@@ -170,6 +170,63 @@ async function main(): Promise<void> {
     "a valid brand in passes the schema",
     ImsCreateInboundDocumentSchema.safeParse({ type: "BRAND_INVENTORY_IN", brandOwnerId: "b", items }).success
   );
+
+  console.log("\n5. Brand In void — the undo, items removed from inventory");
+  const binVoid = await createInboundDocument(
+    {
+      type: "BRAND_INVENTORY_IN",
+      brandOwnerId: brand.id,
+      externalReference: "DESIGNER-PACKING-VOID",
+      items: [singleStone("SMOKE-BIN-4")]
+    },
+    user.id
+  );
+  check("brand in (to void) ok", binVoid.ok, binVoid.ok ? undefined : binVoid.error);
+  const binVoidDoc = await prisma.document.findFirstOrThrow({
+    where: { externalReference: "DESIGNER-PACKING-VOID", type: "BRAND_INVENTORY_IN" }
+  });
+  const voided = await voidDocument(binVoidDoc.id, user.id);
+  check("brand in void ok", voided.ok, voided.ok ? undefined : voided.error);
+  check(
+    "voided brand in document is VOID",
+    voided.ok && voided.document.status === "VOID",
+    voided.ok ? voided.document.status : voided.error
+  );
+  const goneItem = await prisma.inventoryItem.findFirst({ where: { sku: "SMOKE-BIN-4" } });
+  check("voided brand in item removed from inventory", goneItem === null, goneItem);
+
+  console.log("\n6. Brand Inventory Out — returning stock to the brand");
+  const binOut = await createInboundDocument(
+    {
+      type: "BRAND_INVENTORY_IN",
+      brandOwnerId: brand.id,
+      externalReference: "DESIGNER-PACKING-OUT",
+      items: [singleStone("SMOKE-BIN-5")]
+    },
+    user.id
+  );
+  check("brand in (to return) ok", binOut.ok, binOut.ok ? undefined : binOut.error);
+  const it5 = await item("SMOKE-BIN-5");
+  const brandOut = await createOutboundDocument(
+    { type: "BRAND_INVENTORY_OUT", clientId: brand.id, inventoryItemIds: [it5.id] },
+    user.id
+  );
+  check("brand out ok", brandOut.ok, brandOut.ok ? undefined : brandOut.error);
+  if (brandOut.ok) {
+    check("mints a BOU-#### number", /^BOU-\d+$/.test(brandOut.document.documentNumber ?? ""), brandOut.document.documentNumber);
+    check("brand out document is CLOSED immediately", brandOut.document.status === "CLOSED", brandOut.document.status);
+    check("brand out addressed to the brand owner", brandOut.document.clientId === brand.id, brandOut.document.clientId);
+  }
+  check("returned item status is RETURNED", (await item("SMOKE-BIN-5")).status === "RETURNED");
+  check("returned item stays tagged to the brand owner", (await item("SMOKE-BIN-5")).brandOwnerId === brand.id);
+
+  console.log("\n7. Brand Out ownership guard");
+  const it3ForGuard = await item("SMOKE-BIN-3");
+  const wrongOwner = await createOutboundDocument(
+    { type: "BRAND_INVENTORY_OUT", clientId: brand.id, inventoryItemIds: [it3ForGuard.id] },
+    user.id
+  );
+  check("returning a non-brand-owned item is rejected", !wrongOwner.ok, wrongOwner);
 
   await cleanupItems();
 
