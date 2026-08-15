@@ -38,6 +38,7 @@ import {
   emailDocuments,
   quickbooksSyncDocuments,
   recordMemoReturn,
+  recordVendorReturn,
   voidDocument
 } from "../modules/ims/documents.service";
 import {
@@ -504,6 +505,23 @@ imsRouter.post(
       return;
     }
     const result = await recordMemoReturn(req.params.id, parsed.data, req.user!.id);
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.status(201).json({ returnDocument: result.returnDocument, memo: result.memo });
+  })
+);
+
+imsRouter.post(
+  "/documents/:id/return-to-vendor",
+  wrap(async (req, res) => {
+    const parsed = ImsRecordReturnSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid return payload" });
+      return;
+    }
+    const result = await recordVendorReturn(req.params.id, parsed.data, req.user!.id);
     if (!result.ok) {
       res.status(400).json({ error: result.error });
       return;
