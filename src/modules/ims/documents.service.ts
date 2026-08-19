@@ -1009,20 +1009,22 @@ export async function createInboundDocument(
               issueDate,
               dueDate,
               notes: input.notes ?? null,
-              createdById,
-              lineItems: {
-                create: (lines as Array<{ inventoryItemId: string } & ReturnType<typeof costSnapshot>>).map(
-                  (l) => ({
-                    inventoryItemId: l.inventoryItemId,
-                    lineStatus: "IN_STOCK" as const,
-                    quantity: l.quantity,
-                    caratWeight: l.caratWeight,
-                    unitPrice: l.unitPrice,
-                    totalPrice: l.totalPrice
-                  })
-                )
-              }
+              createdById
             }
+          });
+
+          await tx.documentLineItem.createMany({
+            data: (lines as Array<{ inventoryItemId: string } & ReturnType<typeof costSnapshot>>).map(
+              (l) => ({
+                documentId: doc.id,
+                inventoryItemId: l.inventoryItemId,
+                lineStatus: "IN_STOCK" as const,
+                quantity: l.quantity,
+                caratWeight: l.caratWeight,
+                unitPrice: l.unitPrice,
+                totalPrice: l.totalPrice
+              })
+            )
           });
 
           if (createdItemIds.length) {

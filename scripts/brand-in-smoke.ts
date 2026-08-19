@@ -36,27 +36,37 @@ function singleStone(sku: string, over: Record<string, unknown> = {}): ImsInboun
 
 const SKUS = ["SMOKE-BIN-1", "SMOKE-BIN-2", "SMOKE-BIN-3", "SMOKE-BIN-4", "SMOKE-BIN-5"];
 
+const VOID_REFS = ["DESIGNER-PACKING-VOID", "DESIGNER-PACKING-OUT"];
+
 async function cleanupItems(): Promise<void> {
   const stale = await prisma.inventoryItem.findMany({
     where: { sku: { in: SKUS } },
     select: { id: true }
   });
-  if (stale.length === 0) return;
   const ids = stale.map((s) => s.id);
-  const docIds = Array.from(
-    new Set(
-      (
-        await prisma.documentLineItem.findMany({
-          where: { inventoryItemId: { in: ids } },
-          select: { documentId: true }
-        })
-      ).map((l) => l.documentId)
-    )
+  const docIds = new Set(
+    ids.length
+      ? (
+          await prisma.documentLineItem.findMany({
+            where: { inventoryItemId: { in: ids } },
+            select: { documentId: true }
+          })
+        ).map((l) => l.documentId)
+      : []
   );
-  await prisma.documentLineItem.deleteMany({ where: { documentId: { in: docIds } } });
+  // A voided document's item is gone, so the sku-based lookup above can't find it —
+  // catch those leftovers by their fixed externalReference instead.
+  for (const doc of await prisma.document.findMany({
+    where: { externalReference: { in: VOID_REFS } },
+    select: { id: true }
+  })) {
+    docIds.add(doc.id);
+  }
+  const docIdList = Array.from(docIds);
+  await prisma.documentLineItem.deleteMany({ where: { documentId: { in: docIdList } } });
   await prisma.itemStatusHistory.deleteMany({ where: { inventoryItemId: { in: ids } } });
   await prisma.inventoryItem.deleteMany({ where: { id: { in: ids } } });
-  await prisma.document.deleteMany({ where: { id: { in: docIds } } });
+  await prisma.document.deleteMany({ where: { id: { in: docIdList } } });
 }
 
 async function item(sku: string) {
