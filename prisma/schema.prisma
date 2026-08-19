@@ -614,6 +614,11 @@ model DocumentSequence {
   lastValue Int          @default(1000)
 }
 
+model SkuSequence {
+  key       String @id @default("global")
+  lastValue Int    @default(1000)
+}
+
 model VocabularyValue {
   id        String   @id @default(cuid())
   kind      String
