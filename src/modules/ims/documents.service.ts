@@ -895,10 +895,18 @@ export async function createInboundDocument(
 
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
+      const t0 = Date.now();
+      const mark = (label: string): void => {
+        console.log(
+          `[createInboundDocument] ${label} @ ${Date.now() - t0}ms (attempt ${attempt}, items=${input.items.length})`
+        );
+      };
       const docId = await prisma.$transaction(
         async (tx) => {
+          mark("tx started");
           const needsMint = providedSkus.filter((s, i) => s === null && !restockPlans.has(i)).length;
           const minted = await mintSkuBatch(tx, needsMint);
+          mark("skus minted");
           let mi = 0;
           const skus = providedSkus.map((s, i) => (restockPlans.has(i) ? s! : (s ?? minted[mi++])));
 
@@ -962,12 +970,14 @@ export async function createInboundDocument(
             const detail = ((stone ?? jewelry ?? material) as { create: Record<string, unknown> }).create;
             pending.push({ index: i, sku: skus[i], core: core as any, detailKind, detail });
           }
+          mark("restock plans applied");
 
           if (pending.length) {
             const createdCore = await tx.inventoryItem.createManyAndReturn({
               data: pending.map((p) => p.core),
               select: { id: true, sku: true }
             });
+            mark("core inventory items inserted");
             const idBySku = new Map(createdCore.map((r) => [r.sku, r.id]));
 
             const stoneRows: Array<Record<string, unknown>> = [];
@@ -986,6 +996,7 @@ export async function createInboundDocument(
             if (stoneRows.length) await tx.stoneDetail.createMany({ data: stoneRows as any });
             if (jewelryRows.length) await tx.jewelryDetail.createMany({ data: jewelryRows as any });
             if (materialRows.length) await tx.otherMaterialDetail.createMany({ data: materialRows as any });
+            mark("detail rows inserted");
           }
 
           let documentNumber: string | null = null;
@@ -997,6 +1008,7 @@ export async function createInboundDocument(
             });
             documentNumber = `${DOC_PREFIX[input.type]}-${seq.lastValue}`;
           }
+          mark("document number minted");
 
           const doc = await tx.document.create({
             data: {
@@ -1012,6 +1024,7 @@ export async function createInboundDocument(
               createdById
             }
           });
+          mark("document row created");
 
           await tx.documentLineItem.createMany({
             data: (lines as Array<{ inventoryItemId: string } & ReturnType<typeof costSnapshot>>).map(
@@ -1026,6 +1039,7 @@ export async function createInboundDocument(
               })
             )
           });
+          mark("line items inserted");
 
           if (createdItemIds.length) {
             await tx.itemStatusHistory.createMany({
@@ -1037,6 +1051,7 @@ export async function createInboundDocument(
                 changedById: createdById
               }))
             });
+            mark("created-item status history inserted");
           }
 
           if (restoredItemIds.length) {
@@ -1049,8 +1064,10 @@ export async function createInboundDocument(
                 changedById: createdById
               }))
             });
+            mark("restored-item status history inserted");
           }
 
+          mark("tx callback returning");
           return doc.id;
         },
         { timeout: 30_000 }
