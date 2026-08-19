@@ -50,38 +50,26 @@ function isUniqueViolation(e: unknown): boolean {
 }
 
 async function mintSku(): Promise<string> {
-  const rows = await prisma.inventoryItem.findMany({
-    where: { sku: { startsWith: "RAD-0" } },
-    select: { sku: true }
+  const seq = await prisma.skuSequence.upsert({
+    where: { key: "global" },
+    create: { key: "global", lastValue: 1001 },
+    update: { lastValue: { increment: 1 } }
   });
-  let max = 1000;
-  for (const { sku } of rows) {
-    const m = /^RAD-0(\d+)$/.exec(sku);
-    if (m) {
-      const n = Number(m[1]);
-      if (Number.isFinite(n) && n > max) max = n;
-    }
-  }
-  return `RAD-0${max + 1}`;
+  return `RAD-0${seq.lastValue}`;
 }
 
 export async function mintSkuBatch(
   tx: Prisma.TransactionClient,
   count: number
 ): Promise<string[]> {
-  const rows = await tx.inventoryItem.findMany({
-    where: { sku: { startsWith: "RAD-0" } },
-    select: { sku: true }
+  if (count <= 0) return [];
+  const seq = await tx.skuSequence.upsert({
+    where: { key: "global" },
+    create: { key: "global", lastValue: 1000 + count },
+    update: { lastValue: { increment: count } }
   });
-  let max = 1000;
-  for (const { sku } of rows) {
-    const m = /^RAD-0(\d+)$/.exec(sku);
-    if (m) {
-      const n = Number(m[1]);
-      if (Number.isFinite(n) && n > max) max = n;
-    }
-  }
-  return Array.from({ length: count }, (_, i) => `RAD-0${max + 1 + i}`);
+  const end = seq.lastValue;
+  return Array.from({ length: count }, (_, i) => `RAD-0${end - count + 1 + i}`);
 }
 
 export function buildInboundItemCreateData(
