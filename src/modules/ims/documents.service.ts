@@ -39,6 +39,29 @@ function isUniqueViolation(e: unknown): boolean {
   return e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002";
 }
 
+/**
+ * Rows per bulk INSERT. A single createMany of several hundred rows becomes one
+ * enormous statement; over a pooled connection that is where large inbound
+ * imports were stalling. Chunking keeps every statement small and bounded.
+ */
+const INSERT_CHUNK = 100;
+
+async function createManyChunked<T>(
+  rows: T[],
+  insert: (batch: T[]) => Promise<unknown>
+): Promise<void> {
+  for (let i = 0; i < rows.length; i += INSERT_CHUNK) {
+    await insert(rows.slice(i, i + INSERT_CHUNK));
+  }
+}
+
+/**
+ * An inbound document can carry hundreds of items, and each one fans out into
+ * item / detail / line / audit rows. 30s was not a real budget for that on a
+ * remote database — a 374-item import legitimately needs longer.
+ */
+const INBOUND_TX_TIMEOUT_MS = Number(process.env.IMS_INBOUND_TX_TIMEOUT_MS ?? 120_000);
+
 function issuedAt(isoDay: string | undefined): Date {
   return isoDay ? new Date(`${isoDay}T12:00:00.000Z`) : new Date();
 }
@@ -973,10 +996,18 @@ export async function createInboundDocument(
           mark("restock plans applied");
 
           if (pending.length) {
-            const createdCore = await tx.inventoryItem.createManyAndReturn({
-              data: pending.map((p) => p.core),
-              select: { id: true, sku: true }
-            });
+            const createdCore: Array<{ id: string; sku: string }> = [];
+            await createManyChunked(
+              pending.map((p) => p.core),
+              async (batch) => {
+                createdCore.push(
+                  ...(await tx.inventoryItem.createManyAndReturn({
+                    data: batch,
+                    select: { id: true, sku: true }
+                  }))
+                );
+              }
+            );
             mark("core inventory items inserted");
             const idBySku = new Map(createdCore.map((r) => [r.sku, r.id]));
 
@@ -993,9 +1024,11 @@ export async function createInboundDocument(
               createdItemIds.push(id);
               lines[p.index] = { inventoryItemId: id, ...detailCostSnapshot(p.detailKind, p.detail) };
             }
-            if (stoneRows.length) await tx.stoneDetail.createMany({ data: stoneRows as any });
-            if (jewelryRows.length) await tx.jewelryDetail.createMany({ data: jewelryRows as any });
-            if (materialRows.length) await tx.otherMaterialDetail.createMany({ data: materialRows as any });
+            await createManyChunked(stoneRows, (b) => tx.stoneDetail.createMany({ data: b as any }));
+            await createManyChunked(jewelryRows, (b) => tx.jewelryDetail.createMany({ data: b as any }));
+            await createManyChunked(materialRows, (b) =>
+              tx.otherMaterialDetail.createMany({ data: b as any })
+            );
             mark("detail rows inserted");
           }
 
@@ -1026,8 +1059,8 @@ export async function createInboundDocument(
           });
           mark("document row created");
 
-          await tx.documentLineItem.createMany({
-            data: (lines as Array<{ inventoryItemId: string } & ReturnType<typeof costSnapshot>>).map(
+          await createManyChunked(
+            (lines as Array<{ inventoryItemId: string } & ReturnType<typeof costSnapshot>>).map(
               (l) => ({
                 documentId: doc.id,
                 inventoryItemId: l.inventoryItemId,
@@ -1037,40 +1070,43 @@ export async function createInboundDocument(
                 unitPrice: l.unitPrice,
                 totalPrice: l.totalPrice
               })
-            )
-          });
+            ),
+            (b) => tx.documentLineItem.createMany({ data: b })
+          );
           mark("line items inserted");
 
           if (createdItemIds.length) {
-            await tx.itemStatusHistory.createMany({
-              data: createdItemIds.map((inventoryItemId) => ({
+            await createManyChunked(
+              createdItemIds.map((inventoryItemId) => ({
                 inventoryItemId,
                 previousStatus: null,
                 newStatus: "IN_STOCK" as const,
                 documentId: doc.id,
                 changedById: createdById
-              }))
-            });
+              })),
+              (b) => tx.itemStatusHistory.createMany({ data: b })
+            );
             mark("created-item status history inserted");
           }
 
           if (restoredItemIds.length) {
-            await tx.itemStatusHistory.createMany({
-              data: restoredItemIds.map(({ id, from }) => ({
+            await createManyChunked(
+              restoredItemIds.map(({ id, from }) => ({
                 inventoryItemId: id,
                 previousStatus: from as ItemWithDetails["status"],
                 newStatus: "IN_STOCK" as const,
                 documentId: doc.id,
                 changedById: createdById
-              }))
-            });
+              })),
+              (b) => tx.itemStatusHistory.createMany({ data: b })
+            );
             mark("restored-item status history inserted");
           }
 
           mark("tx callback returning");
           return doc.id;
         },
-        { timeout: 30_000 }
+        { timeout: INBOUND_TX_TIMEOUT_MS, maxWait: 15_000 }
       );
 
       const created = await prisma.document.findUniqueOrThrow({
@@ -1080,6 +1116,14 @@ export async function createInboundDocument(
       return { ok: true, document: prismaDocToDto(created) };
     } catch (e) {
       if (isUniqueViolation(e) && attempt < 2) continue;
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2028") {
+        // Ran out of transaction budget. Nothing was written — the whole thing
+        // rolls back — so say that plainly instead of a bare "Internal error".
+        return {
+          ok: false,
+          error: `This upload (${input.items.length} items) took too long to save and was rolled back — nothing was created. Try splitting it into smaller uploads.`
+        };
+      }
       throw e;
     }
   }
