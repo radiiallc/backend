@@ -119,9 +119,13 @@ const HEADER_SCAN_ROWS = 10;
 export function findHeaderRow(records: string[][]): number {
   let best = 0;
   let bestScore = 0;
-  const limit = Math.min(records.length, HEADER_SCAN_ROWS);
-  for (let i = 0; i < limit; i++) {
+  // Counts rows with content, not raw positions — a sheet whose header sits
+  // below a run of untouched rows must not scan past it.
+  let scanned = 0;
+  for (let i = 0; i < records.length && scanned < HEADER_SCAN_ROWS; i++) {
     const keys = new Set(records[i].map(normalizeHeader).filter(Boolean));
+    if (keys.size === 0) continue;
+    scanned++;
     let score = 0;
     for (const k of keys) if (HEADER_SIGNALS.has(k)) score++;
     if (score > bestScore) {
@@ -145,6 +149,39 @@ function makeGet(headerIndex: Map<string, number>, row: string[]): RowGet {
     }
     return "";
   };
+}
+
+/**
+ * Columns that on their own say "this line is a product". Attribute-only
+ * columns — lab, certificate, colour, clarity, origin, treatment, images — are
+ * deliberately absent: none of them identifies an item, so a row carrying
+ * nothing else is spreadsheet residue rather than a line someone meant to
+ * import. Excel hands us hundreds of such rows below the real data, and one
+ * stray character in an attribute cell used to be enough to make a row look
+ * real, fail validation and report a scary "row 176 — shape is required"
+ * against a line the sender could not even find.
+ */
+const IDENTITY_ALIASES: string[][] = [
+  ["radiiasku", "sku", "stock"],
+  ["vendorsku"],
+  ["itemname", "name"],
+  ["shape"],
+  ["carat", "caratweight", "caratwt", "weight", "weightct", "carats", "ct", "totalcarat", "totalcaratweight", "tcw"],
+  ["quantity", "qty"],
+  ["cost", "costpercarat", "costperct", "productioncost", "pricepercarat", "priceperct", "pricepct"],
+  ["wholesale", "wholesaleprice", "wholesalepercarat", "wholesaleperct", "wholesalepricepercarat", "wholesalepriceperct", "totalwholesaleprice"],
+  ["retail", "retailprice", "retailpercarat", "retailperct", "retailpricepercarat", "retailpriceperct", "totalretailprice"],
+  ["stonetype", "type", "gemtype", "variety"],
+  ["jewelrytype", "itemtype"],
+  ["materialtype", "subtype", "material", "category"],
+  ["metal", "metaltype"],
+  ["metalweight", "metalweightgrams", "weightgrams", "grams"],
+  ["description", "desc"],
+  ["brand"]
+];
+
+function hasImportableSignal(get: RowGet): boolean {
+  return IDENTITY_ALIASES.some((aliases) => get(aliases) !== "");
 }
 
 function buildRawItem(category: ImsCsvCategory, get: RowGet): Record<string, unknown> {
@@ -321,7 +358,10 @@ function parseRecords(
   let closedCount = 0;
 
   dataRows.forEach((row, i) => {
-    const rowNumber = i + 1;
+    // The row number the sender can act on: the line as it appears in their
+    // file, counting the header and anything above it. Reporting an offset from
+    // the header instead sends them hunting for a row that isn't there.
+    const rowNumber = headerRow + i + 2;
     if (row.every((c) => (c ?? "").trim() === "")) return;
 
     const get = makeGet(headerIndex, row);
@@ -329,6 +369,8 @@ function parseRecords(
       closedCount++;
       return;
     }
+    // Nothing on this row identifies an item — treat it as blank, not as an error.
+    if (!hasImportableSignal(get)) return;
 
     const sku = str(get(["radiiasku", "sku", "stock"])) ?? null;
     const raw = buildRawItem(category, get);
@@ -359,7 +401,10 @@ export function parseInventoryCsv(category: ImsCsvCategory, csvText: string): Im
   let records: string[][];
   try {
     records = parse(csvText, {
-      skip_empty_lines: true,
+      // Empty lines are KEPT so a record's index stays its line number — they
+      // are discarded later as blank rows anyway, and dropping them here would
+      // shift every reported row number above the gap.
+      skip_empty_lines: false,
       trim: true,
       bom: true,
       relax_column_count: true
