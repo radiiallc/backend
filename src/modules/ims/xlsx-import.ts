@@ -170,11 +170,22 @@ function sheetToRecords(
   epoch1904: boolean
 ): string[][] {
   const records: string[][] = [];
-  const rowRe = /<row\b[^>]*(?:\/>|>([\s\S]*?)<\/row>)/g;
+  const rowRe = /<row\b([^>]*)(?:\/>|>([\s\S]*?)<\/row>)/g;
   let r: RegExpExecArray | null;
   while ((r = rowRe.exec(xml))) {
-    const body = r[1];
-    if (!body) continue;
+    // Excel emits a <row> only where something exists, so an untouched row in
+    // the middle of a sheet is simply absent. Honour the declared `r="12"` and
+    // pad the gap, otherwise every index below a skipped row slides up and the
+    // row numbers we report back stop matching what the sender sees in Excel.
+    const declared = Number(attr(r[1], "r") ?? "");
+    const at = Number.isInteger(declared) && declared > 0 ? declared - 1 : records.length;
+    while (records.length < at) records.push([]);
+
+    const body = r[2];
+    if (!body) {
+      if (records.length === at) records.push([]);
+      continue;
+    }
     const cells = new Map<number, string>();
     let widest = -1;
     const cellRe = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g;
@@ -214,7 +225,8 @@ function sheetToRecords(
     }
     const row: string[] = [];
     for (let i = 0; i <= widest; i++) row.push(cells.get(i) ?? "");
-    records.push(row);
+    if (at < records.length) records[at] = row;
+    else records.push(row);
   }
   return records;
 }
