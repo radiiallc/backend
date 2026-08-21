@@ -95,18 +95,60 @@ async function main() {
     return;
   }
 
+  // Copying one column into another is a single statement per table. Doing it
+  // row by row means one network round trip each, which over a remote pooled
+  // connection is minutes of silence for work the database does in one pass.
+  //
+  // Every statement is guarded on IS NULL, so this only ever fills blanks and
+  // re-running it is safe — including after a run that was interrupted midway.
+  console.log("");
+  const counts: Array<[string, number]> = [];
+
+  counts.push(["jewelry wholesale ← cost", await prisma.$executeRaw`
+    UPDATE "JewelryDetail" d
+       SET "wholesalePrice" = d."productionCost"
+      FROM "InventoryItem" i
+     WHERE d."inventoryItemId" = i."id"
+       AND i."brandOwnerId" = ${brand.id}
+       AND d."wholesalePrice" IS NULL
+  `]);
+
+  counts.push(["material wholesale ← cost", await prisma.$executeRaw`
+    UPDATE "OtherMaterialDetail" d
+       SET "wholesalePrice" = d."cost"
+      FROM "InventoryItem" i
+     WHERE d."inventoryItemId" = i."id"
+       AND i."brandOwnerId" = ${brand.id}
+       AND d."wholesalePrice" IS NULL
+  `]);
+
+  // A stone is the only one where both sides are optional, so it mirrors both ways.
+  counts.push(["stone wholesale ← cost", await prisma.$executeRaw`
+    UPDATE "StoneDetail" d
+       SET "wholesalePricePerCt" = d."costPerCt"
+      FROM "InventoryItem" i
+     WHERE d."inventoryItemId" = i."id"
+       AND i."brandOwnerId" = ${brand.id}
+       AND d."wholesalePricePerCt" IS NULL
+       AND d."costPerCt" IS NOT NULL
+  `]);
+
+  counts.push(["stone cost ← wholesale", await prisma.$executeRaw`
+    UPDATE "StoneDetail" d
+       SET "costPerCt" = d."wholesalePricePerCt"
+      FROM "InventoryItem" i
+     WHERE d."inventoryItemId" = i."id"
+       AND i."brandOwnerId" = ${brand.id}
+       AND d."costPerCt" IS NULL
+       AND d."wholesalePricePerCt" IS NOT NULL
+  `]);
+
   let done = 0;
-  for (const it of items) {
-    const plan = plans.find((p) => p.sku === it.sku);
-    if (!plan) continue;
-    const [table, field] = plan.field.split(".");
-    const data = { [field]: plan.value };
-    if (table === "stone") await prisma.stoneDetail.update({ where: { inventoryItemId: it.id }, data });
-    else if (table === "jewelry") await prisma.jewelryDetail.update({ where: { inventoryItemId: it.id }, data });
-    else await prisma.otherMaterialDetail.update({ where: { inventoryItemId: it.id }, data });
-    done++;
+  for (const [label, n] of counts) {
+    if (n > 0) console.log(`  ${label}: ${n}`);
+    done += n;
   }
-  console.log(`\nUpdated ${done} item(s).`);
+  console.log(`\nUpdated ${done} row(s).`);
 }
 
 main()
