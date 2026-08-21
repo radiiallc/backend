@@ -63,6 +63,24 @@ function perCtFromTotal(total: number | null, weightCt: number | null): number |
   return Math.round((total / weightCt) * 100) / 100;
 }
 
+/**
+ * Brands rarely quote both a cost and a wholesale: a designer whose stock we
+ * hold sends one or the other, and the blank column then leaves the price off
+ * every Memo Out and Invoice struck against that stock. Where exactly one side
+ * is given, mirror it — a supplier who names a single number means it for both.
+ *
+ * Only fills a blank. Two real numbers are left alone, and a row with neither
+ * still fails validation rather than being invented at zero.
+ */
+function mirrorCostAndWholesale(
+  cost: number | null,
+  wholesale: number | null
+): { cost: number | null; wholesale: number | null } {
+  if (cost === null && wholesale !== null) return { cost: wholesale, wholesale };
+  if (wholesale === null && cost !== null) return { cost, wholesale: cost };
+  return { cost, wholesale };
+}
+
 function toSubtype(raw: string): "SINGLE" | "PAIR" | "PARCEL" {
   const s = (raw ?? "").toLowerCase();
   if (s.includes("parcel")) return "PARCEL";
@@ -142,6 +160,13 @@ function buildRawItem(category: ImsCsvCategory, get: RowGet): Record<string, unk
       ? splitDiamondColor(get(["color"]))
       : { color: str(get(["color"])), fancyColor: undefined };
     const weightCt = num(get(["carat", "caratweight", "caratwt", "weight", "weightct", "carats", "ct", "totalcarat", "totalcaratweight", "tcw"]));
+    // Per-carat on both sides, and the wholesale may have come from a line total,
+    // so resolve that first and mirror the two rates against each other.
+    const stonePrices = mirrorCostAndWholesale(
+      num(get(["costpercarat", "costperct", "cost", "pricepercarat", "priceperct", "pricepct"])),
+      num(get(["wholesalepercarat", "wholesaleperct", "wholesalepricepercarat", "wholesalepriceperct", "wholesaleprice", "wholesale"])) ??
+        perCtFromTotal(num(get(["totalwholesaleprice"])), weightCt)
+    );
     const stone: Record<string, unknown> = {
       shape: str(get(["shape"])),
       weightCt,
@@ -163,10 +188,8 @@ function buildRawItem(category: ImsCsvCategory, get: RowGet): Record<string, unk
       certNumber: str(get(["certno", "certnumber", "certificate", "certificateno", "certificatenumber", "cert"])),
       treatment: str(get(["treatment"])),
       origin: str(get(["origin"])),
-      costPerCt: num(get(["costpercarat", "costperct", "cost", "pricepercarat", "priceperct", "pricepct"])),
-      wholesalePricePerCt:
-        num(get(["wholesalepercarat", "wholesaleperct", "wholesalepricepercarat", "wholesalepriceperct", "wholesaleprice", "wholesale"])) ??
-        perCtFromTotal(num(get(["totalwholesaleprice"])), weightCt),
+      costPerCt: stonePrices.cost,
+      wholesalePricePerCt: stonePrices.wholesale,
       retailPricePerCt:
         num(get(["retailpercarat", "retailperct", "retailpricepercarat", "retailpriceperct", "retailprice", "retail"])) ??
         perCtFromTotal(num(get(["totalretailprice"])), weightCt),
@@ -190,6 +213,10 @@ function buildRawItem(category: ImsCsvCategory, get: RowGet): Record<string, unk
   }
 
   if (category === "jewelry") {
+    const prices = mirrorCostAndWholesale(
+      num(get(["cost", "productioncost"])),
+      num(get(["wholesaleprice", "wholesale"]))
+    );
     return {
       itemType: "JEWELRY",
       ...core,
@@ -202,8 +229,8 @@ function buildRawItem(category: ImsCsvCategory, get: RowGet): Record<string, unk
         ringSize: str(get(["size", "ringsize"])),
         mm: num(get(["mm"])),
         metalWeightGrams: num(get(["metalweight", "metalweightgrams", "weightgrams", "grams"])),
-        productionCost: num(get(["cost", "productioncost"])),
-        wholesalePrice: num(get(["wholesaleprice", "wholesale"])),
+        productionCost: prices.cost,
+        wholesalePrice: prices.wholesale,
         retailPrice: num(get(["retailprice", "retail"])),
         brand: str(get(["brand"])),
         photo1Url: str(get(["image1", "image", "photo1", "photo"]))
@@ -211,6 +238,10 @@ function buildRawItem(category: ImsCsvCategory, get: RowGet): Record<string, unk
     };
   }
 
+  const materialPrices = mirrorCostAndWholesale(
+    num(get(["cost"])),
+    num(get(["wholesaleprice", "wholesale"]))
+  );
   return {
     itemType: "OTHER_MATERIAL",
     ...core,
@@ -222,8 +253,8 @@ function buildRawItem(category: ImsCsvCategory, get: RowGet): Record<string, unk
       lengthMm: num(get(["length"])),
       size: str(get(["size"])),
       mm: num(get(["mm"])),
-      cost: num(get(["cost"])),
-      wholesalePrice: num(get(["wholesaleprice", "wholesale"])),
+      cost: materialPrices.cost,
+      wholesalePrice: materialPrices.wholesale,
       photo1Url: str(get(["image1", "image", "photo1", "photo"]))
     }
   };
