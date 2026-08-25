@@ -13,6 +13,7 @@ import {
   ImsCreateVocabularySchema,
   ImsDocumentIdsSchema,
   ImsDocumentQuerySchema,
+  ImsEmailDocumentsSchema,
   ImsGiaLookupSchema,
   ImsInventoryQuerySchema,
   ImsParseInboundCsvSchema,
@@ -29,6 +30,7 @@ import {
   transitionClientStatus,
   updateClient
 } from "../modules/ims/clients.service";
+import { buildDocumentPdf } from "../modules/ims/document-pdf";
 import { getDocumentByIdFromDb, listDocumentsFromDb } from "../modules/ims/documents.reads";
 import {
   createInboundDocument,
@@ -441,17 +443,33 @@ imsRouter.post(
 imsRouter.post(
   "/documents/email",
   wrap(async (req, res) => {
-    const parsed = ImsDocumentIdsSchema.safeParse(req.body ?? {});
+    const parsed = ImsEmailDocumentsSchema.safeParse(req.body ?? {});
     if (!parsed.success) {
       res.status(400).json({ error: "Invalid payload" });
       return;
     }
-    const result = await emailDocuments(parsed.data.documentIds);
+    const { documentIds, to, subject, message } = parsed.data;
+    const result = await emailDocuments(documentIds, { to, subject, message });
     if (!result.ok) {
       res.status(400).json({ error: result.error });
       return;
     }
     res.json({ documents: result.documents });
+  })
+);
+
+imsRouter.get(
+  "/documents/:id/pdf",
+  wrap(async (req, res) => {
+    const pdf = await buildDocumentPdf(req.params.id);
+    if (!pdf) {
+      res.status(404).json({ error: "Document not found" });
+      return;
+    }
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="${pdf.filename}"`);
+    res.setHeader("Content-Length", String(pdf.buffer.length));
+    res.end(pdf.buffer);
   })
 );
 

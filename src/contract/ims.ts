@@ -632,6 +632,14 @@ export const ImsDocumentIdsSchema = z.object({
 });
 export type ImsDocumentIds = z.infer<typeof ImsDocumentIdsSchema>;
 
+export const ImsEmailDocumentsSchema = z.object({
+  documentIds: z.array(z.string().min(1)).min(1),
+  to: z.array(z.email()).min(1),
+  subject: z.string().trim().min(1).max(300),
+  message: z.string().max(5000).default("")
+});
+export type ImsEmailDocuments = z.infer<typeof ImsEmailDocumentsSchema>;
+
 export const ImsClientSchema = z.object({
   id: z.string(),
   name: z.string(),
