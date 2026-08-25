@@ -8,7 +8,14 @@ import {
   renderDocument,
   TABLE_LAYOUTS
 } from "../src/modules/ims/document-pdf";
-import { drawTable, measureText, PdfDocument } from "../src/integrations/pdf/pdf-writer";
+import { brandLogo } from "../src/integrations/pdf/brand-logo";
+import {
+  CELL_PADDING,
+  drawTable,
+  imageFromRgb,
+  measureText,
+  PdfDocument
+} from "../src/integrations/pdf/pdf-writer";
 
 let passed = 0;
 let failed = 0;
@@ -75,13 +82,14 @@ function verifyPdfStructure(label: string, buffer: Buffer): void {
   }
   if (allResolve) check(`${label}: every xref offset resolves to its object`, true);
 
-  const declaredLengths = [...raw.matchAll(/<< \/Length (\d+) >>\nstream\n/g)];
-  let lengthsOk = true;
+  // Binary image streams can contain the bytes "\nendstream" by chance, so the
+  // declared length has to be trusted and the terminator checked where it says.
+  const declaredLengths = [...raw.matchAll(/\/Length (\d+) >>\nstream\n/g)];
+  let lengthsOk = declaredLengths.length > 0;
   for (const match of declaredLengths) {
     const streamStart = (match.index ?? 0) + match[0].length;
-    const declared = Number(match[1]);
-    const actualEnd = raw.indexOf("\nendstream", streamStart);
-    if (actualEnd - streamStart !== declared) {
+    const end = streamStart + Number(match[1]);
+    if (raw.slice(end, end + 10) !== "\nendstream") {
       lengthsOk = false;
       break;
     }
@@ -143,6 +151,54 @@ function verifyNothingOffPage(label: string, buffer: Buffer): void {
     offPage === 0,
     `${offPage} run(s) off-page; widest ends at ${worstRight.toFixed(1)}pt of ${width}pt ("${worstLabel}")`
   );
+
+  const imageRe = /q ([\d.]+) 0 0 ([\d.]+) ([-\d.]+) ([-\d.]+) cm \/Im\d+ Do Q/g;
+  let offPageImages = 0;
+  while ((m = imageRe.exec(raw)) !== null) {
+    const w = Number(m[1]);
+    const h = Number(m[2]);
+    const x = Number(m[3]);
+    const y = Number(m[4]);
+    if (x < 0 || y < 0 || x + w > width || y + h > height) offPageImages += 1;
+  }
+  check(`${label}: no image drawn outside the page`, offPageImages === 0);
+}
+
+/**
+ * Confirms neighbouring cells keep a gutter. A right-aligned column that ends
+ * exactly where the next one starts is still a valid PDF — it just reads as
+ * "0.73Red" — so only re-measuring the runs catches it. Single-page documents
+ * only: runs are grouped by baseline, which pages would smear together.
+ */
+function verifyNoCellCollisions(label: string, buffer: Buffer): void {
+  const raw = buffer.toString("latin1");
+  if ((raw.match(/\/Type \/Page[^s]/g) || []).length !== 1) return;
+
+  const runRe = /BT \/(F[12]) ([\d.]+) Tf ([-\d.]+) ([-\d.]+) Td \((.*?)\) Tj ET/g;
+  const byLine = new Map<string, { x: number; right: number; text: string }[]>();
+  let m: RegExpExecArray | null;
+  while ((m = runRe.exec(raw)) !== null) {
+    const bold = m[1] === "F2";
+    const size = Number(m[2]);
+    const x = Number(m[3]);
+    const text = m[5].replace(/\\([\\()])/g, "$1");
+    const line = byLine.get(m[4]) ?? [];
+    line.push({ x, right: x + measureText(text, size, bold), text });
+    byLine.set(m[4], line);
+  }
+
+  let collisions = 0;
+  let worst = "";
+  for (const runs of byLine.values()) {
+    runs.sort((a, b) => a.x - b.x);
+    for (let i = 1; i < runs.length; i += 1) {
+      if (runs[i].x < runs[i - 1].right + 1) {
+        collisions += 1;
+        if (!worst) worst = `"${runs[i - 1].text}" / "${runs[i].text}"`;
+      }
+    }
+  }
+  check(`${label}: adjacent cells keep a gutter`, collisions === 0, `${collisions} touching (${worst})`);
 }
 
 function writerUnitTests(): void {
@@ -194,6 +250,30 @@ function writerUnitTests(): void {
   land.addPage(true);
   check("landscape page is 792 wide", land.pageWidth === 792 && land.pageHeight === 612);
 
+  const img = new PdfDocument();
+  img.addPage();
+  // 2x1 pixels: one opaque red, one half-transparent blue.
+  const sample = imageFromRgb(
+    2,
+    1,
+    Buffer.from([255, 0, 0, 0, 0, 255]),
+    Buffer.from([255, 128])
+  );
+  img.image(sample, 40, 40, 60, 30);
+  img.image(sample, 40, 90, 60, 30); // same image twice — written once
+  const imgRaw = img.toBuffer().toString("latin1");
+  check("draws an image XObject", /\/Im0 Do Q/.test(imgRaw));
+  // One RGB object plus its alpha mask — the second placement adds no objects.
+  check("reuses one XObject for a repeated image", (imgRaw.match(/\/Subtype \/Image/g) || []).length === 2);
+  check("transparency becomes an /SMask", imgRaw.includes("/SMask"));
+  check(
+    "image is placed with a top-left origin",
+    imgRaw.includes("q 60.00 0 0 30.00 40.00 722.00 cm /Im0 Do Q"),
+    "expected the first placement 40pt from the top of a 792pt page"
+  );
+  check("page resources declare the XObject", /\/XObject << \/Im0 \d+ 0 R >>/.test(imgRaw));
+  verifyPdfStructure("image page", img.toBuffer());
+
   const paged = new PdfDocument();
   paged.addPage();
   const rows = Array.from({ length: 120 }, (_, i) => [`SKU-${i}`, `Row ${i}`, "1.00"]);
@@ -219,11 +299,26 @@ function columnBudgetTests(): void {
       `${name} columns fit the sheet (${total} of ${layout.usableWidth}pt)`,
       total <= layout.usableWidth
     );
-    const headersFit = layout.columns.every(
-      (c) => measureText(c.header, 8, false) <= c.width - 4
+    const tight = layout.columns.filter(
+      (c) => measureText(c.header, 8, false) > c.width - CELL_PADDING * 2
     );
-    check(`${name} headers fit their columns`, headersFit);
+    check(
+      `${name} headers fit their columns, padding included`,
+      tight.length === 0,
+      tight.map((c) => `${c.header} needs ${measureText(c.header, 8).toFixed(0)}pt`).join(", ")
+    );
   }
+}
+
+function logoTests(): void {
+  console.log("\n2b. Letterhead logo");
+  const logo = brandLogo();
+  check("decodes the RADIIA logo asset", logo !== null);
+  if (!logo) return;
+  check(`logo has pixel dimensions (${logo.width}×${logo.height})`, logo.width > 0 && logo.height > 0);
+  check("logo colour data is compressed", logo.rgb.length > 0 && logo.rgb.length < logo.width * logo.height * 3);
+  check("logo keeps its transparency mask", logo.alpha !== null);
+  check("logo is cached, not re-decoded", brandLogo() === logo);
 }
 
 async function documentTests(): Promise<void> {
@@ -267,16 +362,25 @@ async function documentTests(): Promise<void> {
     check(`${doc.type}: builds a PDF (${doc._count.lineItems} line(s))`, true);
     verifyPdfStructure(doc.type, pdf.buffer);
     verifyNothingOffPage(doc.type, pdf.buffer);
+    verifyNoCellCollisions(doc.type, pdf.buffer);
 
     const raw = pdf.buffer.toString("latin1");
-    check(`${doc.type}: renders the RADIIA letterhead`, raw.includes("(RADIIA)"));
+    // With the asset present the mark must be drawn; the wordmark is only the
+    // fallback for an environment where the file could not be read.
+    check(
+      `${doc.type}: renders the RADIIA letterhead`,
+      brandLogo() ? raw.includes("/Im0 Do") : raw.includes("(RADIIA)")
+    );
     if (doc._count.lineItems > 0) {
       check(
         `${doc.type}: renders an itemised table, not the summary card`,
         raw.includes("(Amount)") || raw.includes("(Declared value)"),
         "no table header found"
       );
-      check(`${doc.type}: renders a total`, /\((Total|Declared value): /.test(raw));
+      check(
+        `${doc.type}: renders a total with a currency symbol`,
+        /\((Total|Declared value): -?\$[\d,.]+\)/.test(raw)
+      );
     }
     const label = doc.documentNumber || doc.externalReference;
     if (label) {
@@ -366,7 +470,9 @@ async function stonesTemplateTest(): Promise<void> {
 
   verifyPdfStructure("memo out stones", buffer);
   verifyNothingOffPage("memo out stones", buffer);
+  verifyNoCellCollisions("memo out stones", buffer);
   check("stones template goes landscape", raw.includes("/MediaBox [0 0 792 612]"));
+  check("letterhead draws the logo, not the wordmark", raw.includes("/Im0 Do") && !raw.includes("(RADIIA)"));
   check("renders the To: party", raw.includes("(Reinstein Ross)"));
   check("renders the return-by date", raw.includes("(Return by:)"));
   check("renders September 8, 2026 due date", raw.includes("(September 8, 2026)"));
@@ -388,6 +494,7 @@ async function stonesTemplateTest(): Promise<void> {
 async function main(): Promise<void> {
   writerUnitTests();
   columnBudgetTests();
+  logoTests();
   await documentTests();
   await stonesTemplateTest();
 

@@ -1,3 +1,5 @@
+import { deflateSync } from "node:zlib";
+
 const HELVETICA_WIDTHS = [
   278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278,
   556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 278, 278, 584, 584, 584, 556,
@@ -133,10 +135,40 @@ export type LineOptions = {
   gray?: number;
 };
 
+/**
+ * A decoded raster ready to be written as an image XObject. Both streams are
+ * already deflate-compressed, so the same image can be reused across pages and
+ * documents without paying for the encode again.
+ */
+export type PdfImage = {
+  readonly width: number;
+  readonly height: number;
+  /** Deflated 8-bit RGB samples, row-major. */
+  readonly rgb: Buffer;
+  /** Deflated 8-bit alpha samples, or null when the source is opaque. */
+  readonly alpha: Buffer | null;
+};
+
+export function imageFromRgb(
+  width: number,
+  height: number,
+  rgb: Buffer,
+  alpha: Buffer | null = null
+): PdfImage {
+  return {
+    width,
+    height,
+    rgb: deflateSync(rgb),
+    alpha: alpha ? deflateSync(alpha) : null
+  };
+}
+
 type Page = {
   width: number;
   height: number;
   ops: string[];
+  /** Indices into the document's image table, for this page's /XObject dict. */
+  images: Set<number>;
 };
 
 /**
@@ -146,11 +178,13 @@ type Page = {
  */
 export class PdfDocument {
   private readonly pages: Page[] = [];
+  private readonly images: PdfImage[] = [];
+  private readonly imageIds = new Map<PdfImage, number>();
   private page: Page | null = null;
 
   addPage(landscape = false): void {
     const size = landscape ? PAGE_LANDSCAPE : PAGE_PORTRAIT;
-    this.page = { width: size.width, height: size.height, ops: [] };
+    this.page = { width: size.width, height: size.height, ops: [], images: new Set() };
     this.pages.push(this.page);
   }
 
@@ -195,6 +229,26 @@ export class PdfDocument {
     );
   }
 
+  /**
+   * Places an image with its top-left corner at (x, y), scaled to the given box
+   * in points. The same PdfImage passed twice is written once and referenced.
+   */
+  image(image: PdfImage, x: number, y: number, width: number, height: number): void {
+    const page = this.current();
+    let id = this.imageIds.get(image);
+    if (id === undefined) {
+      id = this.images.length;
+      this.images.push(image);
+      this.imageIds.set(image, id);
+    }
+    page.images.add(id);
+    const bottom = page.height - (y + height);
+    page.ops.push(
+      `q ${width.toFixed(2)} 0 0 ${height.toFixed(2)} ${x.toFixed(2)} ${bottom.toFixed(2)} cm ` +
+        `/Im${id} Do Q`
+    );
+  }
+
   line(x1: number, y1: number, x2: number, y2: number, options: LineOptions = {}): void {
     const page = this.current();
     const width = options.width ?? 0.5;
@@ -208,35 +262,71 @@ export class PdfDocument {
   toBuffer(): Buffer {
     if (this.pages.length === 0) this.addPage();
 
-    const objects: string[] = [];
-    const pageObjectStart = 5;
-    const kids = this.pages
-      .map((_, i) => `${pageObjectStart + i * 2} 0 R`)
-      .join(" ");
+    // Object 1 is the catalog and 2 the page tree, both back-filled once the
+    // objects they point at have been allocated numbers.
+    const objects: string[] = ["", ""];
+    const add = (body: string): number => {
+      objects.push(body);
+      return objects.length; // object numbers are 1-based
+    };
 
-    objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
-    objects[2] = `<< /Type /Pages /Kids [${kids}] /Count ${this.pages.length} >>`;
-    objects[3] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>";
-    objects[4] =
-      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>";
+    const fontRegular = add(
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+    );
+    const fontBold = add(
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>"
+    );
 
-    this.pages.forEach((page, i) => {
-      const pageObj = pageObjectStart + i * 2;
-      const contentObj = pageObj + 1;
-      const stream = page.ops.join("\n");
-      objects[pageObj] =
-        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${page.width} ${page.height}] ` +
-        `/Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents ${contentObj} 0 R >>`;
-      objects[contentObj] =
-        `<< /Length ${Buffer.byteLength(stream, "latin1")} >>\nstream\n${stream}\nendstream`;
+    const stream = (dict: string, data: string): string =>
+      `<< ${dict}/Length ${Buffer.byteLength(data, "latin1")} >>\nstream\n${data}\nendstream`;
+
+    const imageObjects = this.images.map((image) => {
+      let smask = "";
+      if (image.alpha) {
+        const alphaObj = add(
+          stream(
+            `/Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height} ` +
+              `/ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode `,
+            image.alpha.toString("latin1")
+          )
+        );
+        smask = `/SMask ${alphaObj} 0 R `;
+      }
+      return add(
+        stream(
+          `/Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height} ` +
+            `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode ${smask}`,
+          image.rgb.toString("latin1")
+        )
+      );
     });
 
-    const count = objects.length;
+    const pageObjects = this.pages.map((page) => {
+      const contentObj = add(stream("", page.ops.join("\n")));
+      const xobjects =
+        page.images.size > 0
+          ? ` /XObject << ${[...page.images]
+              .map((id) => `/Im${id} ${imageObjects[id]} 0 R`)
+              .join(" ")} >>`
+          : "";
+      return add(
+        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${page.width} ${page.height}] ` +
+          `/Resources << /Font << /F1 ${fontRegular} 0 R /F2 ${fontBold} 0 R >>${xobjects} >> ` +
+          `/Contents ${contentObj} 0 R >>`
+      );
+    });
+
+    objects[0] = "<< /Type /Catalog /Pages 2 0 R >>";
+    objects[1] =
+      `<< /Type /Pages /Kids [${pageObjects.map((n) => `${n} 0 R`).join(" ")}] ` +
+      `/Count ${this.pages.length} >>`;
+
+    const count = objects.length + 1; // slot 0 is the free-list head
     let body = "%PDF-1.4\n";
     const offsets: number[] = [];
     for (let i = 1; i < count; i += 1) {
       offsets[i] = Buffer.byteLength(body, "latin1");
-      body += `${i} 0 obj\n${objects[i]}\nendobj\n`;
+      body += `${i} 0 obj\n${objects[i - 1]}\nendobj\n`;
     }
 
     const xrefOffset = Buffer.byteLength(body, "latin1");
@@ -257,6 +347,13 @@ export type TableColumn = {
 };
 
 export type TableRow = string[];
+
+/**
+ * Inset applied to both sides of every cell. Without it a right-aligned column
+ * ends exactly where its left-aligned neighbour starts, so values run together
+ * ("0.73Red") with no gutter between them.
+ */
+export const CELL_PADDING = 4;
 
 /**
  * Draws a header row plus body rows, paginating when the page runs out. Returns
@@ -283,12 +380,12 @@ export function drawTable(
   const drawHeader = () => {
     let x = options.x;
     for (const col of columns) {
-      const anchor = col.align === "right" ? x + col.width : x;
+      const anchor = col.align === "right" ? x + col.width - CELL_PADDING : x + CELL_PADDING;
       doc.text(col.header, anchor, y, {
         size: fontSize,
         gray: 0.42,
         align: col.align ?? "left",
-        maxWidth: col.width - 4
+        maxWidth: col.width - CELL_PADDING * 2
       });
       x += col.width;
     }
@@ -310,11 +407,11 @@ export function drawTable(
     row.forEach((cell, i) => {
       const col = columns[i];
       if (!col) return;
-      const anchor = col.align === "right" ? x + col.width : x;
+      const anchor = col.align === "right" ? x + col.width - CELL_PADDING : x + CELL_PADDING;
       doc.text(cell, anchor, y, {
         size: fontSize,
         align: col.align ?? "left",
-        maxWidth: col.width - 4
+        maxWidth: col.width - CELL_PADDING * 2
       });
       x += col.width;
     });
