@@ -1,5 +1,6 @@
 import { Prisma, prisma } from "@/db";
 
+import { brandLogo } from "@/integrations/pdf/brand-logo";
 import { drawTable, PdfDocument, type TableColumn } from "@/integrations/pdf/pdf-writer";
 
 import { DOC_LABEL, docDirectionOf } from "./documents.constants";
@@ -39,6 +40,13 @@ function num(value: Prisma.Decimal | null | undefined): number | null {
 function usd(value: number | null): string {
   if (value === null) return DASH;
   return value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/** Totals carry the currency symbol; the columns underneath already say USD. */
+function money(value: number | null): string {
+  if (value === null) return DASH;
+  const amount = usd(Math.abs(value));
+  return value < 0 ? `-$${amount}` : `$${amount}`;
 }
 
 function carats(value: number | null): string {
@@ -166,6 +174,9 @@ function buildRow(line: LineForPdf): DocRow {
 
 export const MARGIN_X = 48;
 
+/** Letterhead mark height in points; its width follows the asset's aspect. */
+export const LOGO_HEIGHT = 36;
+
 /** Usable width between the margins: 696pt landscape, 516pt portrait. */
 export const STONE_TABLE_WIDTH = 792 - MARGIN_X * 2;
 export const PIECE_TABLE_WIDTH = 612 - MARGIN_X * 2;
@@ -176,18 +187,20 @@ export const PIECE_TABLE_WIDTH = 612 - MARGIN_X * 2;
  * both the totals and that no glyph lands outside the page.
  */
 const STONE_COLUMNS: TableColumn[] = [
-  { header: "Lot / SKU", width: 80 },
-  { header: "Stone Type", width: 74 },
-  { header: "Shape", width: 50 },
-  { header: "Carat", width: 40, align: "right" },
+  { header: "Lot / SKU", width: 76 },
+  { header: "Stone Type", width: 68 },
+  { header: "Shape", width: 46 },
+  { header: "Carat", width: 42, align: "right" },
   { header: "Color", width: 40 },
   { header: "Clarity", width: 40 },
   { header: "Cut", width: 38 },
-  { header: "Measurements", width: 78 },
+  { header: "Measurements", width: 72 },
   { header: "Lab", width: 34 },
-  { header: "Cert #", width: 64 },
-  { header: "For", width: 48 },
-  { header: "Price / ct", width: 52, align: "right" },
+  { header: "Cert #", width: 58 },
+  // "For" holds the client reference — a ring name, not a code — so it needs
+  // the widest budget the sheet can spare or every row ends in an ellipsis.
+  { header: "For", width: 74 },
+  { header: "Price / ct", width: 50, align: "right" },
   { header: "Amount", width: 58, align: "right" }
 ];
 
@@ -248,9 +261,18 @@ export function renderDocument(doc: DocForPdf): Buffer {
   const rightEdge = pdf.pageWidth - marginX;
   const bottomMargin = pdf.pageHeight - 72;
 
+  const logo = brandLogo();
+
   const drawHeaderBlock = (): number => {
     let y = 62;
-    pdf.text(COMPANY_NAME, marginX, y, { size: 22, bold: true });
+    if (logo) {
+      // Sits on the wordmark's old baseline, so the address, rule and the rest
+      // of the block keep their spacing whether or not the asset loaded.
+      const width = (LOGO_HEIGHT * logo.width) / logo.height;
+      pdf.image(logo, marginX, y - LOGO_HEIGHT + 4, width, LOGO_HEIGHT);
+    } else {
+      pdf.text(COMPANY_NAME, marginX, y, { size: 22, bold: true });
+    }
     pdf.text(COMPANY_ADDRESS, marginX, y + 16, { size: 8, gray: 0.42 });
 
     pdf.text(DOC_LABEL[doc.type], rightEdge, y - 6, { size: 13, bold: true, align: "right" });
@@ -302,7 +324,7 @@ export function renderDocument(doc: DocForPdf): Buffer {
     pdf.line(marginX, y, rightEdge, y, { width: 0.5, gray: 0.75 });
     y += 14;
     const discount = num(doc.discountAmount) ?? 0;
-    pdf.text(`Total: ${usd(-discount)}`, rightEdge, y, {
+    pdf.text(`Total: ${money(-discount)}`, rightEdge, y, {
       size: 10,
       bold: true,
       align: "right"
@@ -365,7 +387,7 @@ export function renderDocument(doc: DocForPdf): Buffer {
   pdf.line(marginX, y, rightEdge, y, { width: 1.4, gray: 0 });
   y += 15;
   const valueLabel = isBrandOut ? "Declared value" : "Total";
-  pdf.text(`${valueLabel}: ${usd(total)}`, rightEdge, y, { size: 10, bold: true, align: "right" });
+  pdf.text(`${valueLabel}: ${money(total)}`, rightEdge, y, { size: 10, bold: true, align: "right" });
   if (totalWeight > 0) {
     pdf.text(`Total weight: ${carats(totalWeight)} ct`, rightEdge - 150, y, {
       size: 9,
