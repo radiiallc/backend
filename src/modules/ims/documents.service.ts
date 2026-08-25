@@ -9,6 +9,9 @@ import type {
   ImsRecordReturn
 } from "@/contract";
 
+import { sendDocumentEmail } from "@/integrations/email";
+
+import { buildDocumentPdfs } from "./document-pdf";
 import {
   ALLOWED_SOURCE_STATUS,
   DOC_LABEL,
@@ -1416,9 +1419,44 @@ async function reloadDocs(ids: string[]): Promise<ImsDocument[]> {
   return docs.map(prismaDocToDto);
 }
 
-export async function emailDocuments(ids: string[]): Promise<StampDocumentsResult> {
+/**
+ * Emails the selected documents as PDF attachments, then stamps `emailedAt`.
+ *
+ * The stamp is written only after the provider accepts the message: unlike the
+ * fire-and-forget notification emails elsewhere, sending IS the action here, so
+ * a failure must surface to the operator rather than leaving a document marked
+ * "Emailed" that never left the building.
+ */
+export async function emailDocuments(
+  ids: string[],
+  input: { to: string[]; subject: string; message: string }
+): Promise<StampDocumentsResult> {
   const loaded = await requireDocuments(ids);
   if (!loaded.ok) return { ok: false, error: loaded.error };
+
+  const recipients = Array.from(
+    new Set(input.to.map((address) => address.trim()).filter(Boolean))
+  );
+  if (recipients.length === 0) {
+    return { ok: false, error: "At least one recipient email address is required." };
+  }
+
+  const pdfs = await buildDocumentPdfs(loaded.unique);
+  if (pdfs.length !== loaded.unique.length) {
+    return { ok: false, error: "Could not render a PDF for every selected document." };
+  }
+
+  try {
+    await sendDocumentEmail({
+      to: recipients,
+      subject: input.subject,
+      message: input.message,
+      attachments: pdfs.map((pdf) => ({ filename: pdf.filename, content: pdf.buffer }))
+    });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : "Unknown email provider error";
+    return { ok: false, error: `Email was not sent: ${detail}` };
+  }
 
   await prisma.document.updateMany({
     where: { id: { in: loaded.unique } },

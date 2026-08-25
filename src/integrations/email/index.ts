@@ -6,7 +6,15 @@ const resend = new Resend(env.resendApiKey);
 
 const FROM_ADDRESS = env.resendFromEmail;
 
-type SendArgs = { to: string | string[]; subject: string; text: string; html?: string };
+export type EmailAttachment = { filename: string; content: Buffer };
+
+type SendArgs = {
+  to: string | string[];
+  subject: string;
+  text: string;
+  html?: string;
+  attachments?: EmailAttachment[];
+};
 
 export class EmailSendError extends Error {
   constructor(message: string, public readonly detail?: unknown) {
@@ -15,7 +23,7 @@ export class EmailSendError extends Error {
   }
 }
 
-async function sendPlainText({ to, subject, text, html }: SendArgs): Promise<void> {
+async function sendPlainText({ to, subject, text, html, attachments }: SendArgs): Promise<void> {
   let result: Awaited<ReturnType<typeof resend.emails.send>>;
   try {
     result = await resend.emails.send({
@@ -23,7 +31,15 @@ async function sendPlainText({ to, subject, text, html }: SendArgs): Promise<voi
       to,
       subject,
       text,
-      ...(html ? { html } : {})
+      ...(html ? { html } : {}),
+      ...(attachments && attachments.length > 0
+        ? {
+            attachments: attachments.map((a) => ({
+              filename: a.filename,
+              content: a.content.toString("base64")
+            }))
+          }
+        : {})
     });
   } catch (err) {
     console.error("[email] threw", { to, from: FROM_ADDRESS, subject, err });
@@ -552,4 +568,39 @@ export async function sendRequestSubmittedAdminNotification(args: {
 
 function formatUsd(value: number): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(value);
+}
+
+/**
+ * Sends an IMS document (memo, PO, brand-out …) with its PDF attached. Unlike the
+ * notification emails above, delivery here IS the user's action — the caller must
+ * surface a failure rather than stamping the document as emailed.
+ */
+export async function sendDocumentEmail(args: {
+  to: string[];
+  subject: string;
+  message: string;
+  attachments: EmailAttachment[];
+}): Promise<void> {
+  const paragraphs = args.message
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+  const html =
+    `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #111; line-height: 1.6; max-width: 560px;">` +
+    paragraphs
+      .map(
+        (block) =>
+          `<p style="margin: 0 0 16px; white-space: pre-wrap;">${escapeHtml(block)}</p>`
+      )
+      .join("") +
+    logoImgTag() +
+    `</div>`;
+
+  await sendPlainText({
+    to: args.to,
+    subject: args.subject,
+    text: args.message,
+    html,
+    attachments: args.attachments
+  });
 }
