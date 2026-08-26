@@ -1,5 +1,5 @@
 import { Prisma, prisma } from "@/db";
-import { gemstoneVarietyDisplay, mapGemstoneShape, resolveStillImageUrl } from "@/domain";
+import { gemstoneVarietyDisplay, mapGemstoneShape, resolveStillImageUrl, stoneColorLabel } from "@/domain";
 import type { BuyerCart, CartLine } from "@/contract";
 
 function toNumber(value: Prisma.Decimal | null | undefined): number | null {
@@ -109,7 +109,7 @@ export async function getCartForBuyer(
         varietyRaw: dia.origin === "Lab" ? "Lab Diamond" : "Natural Diamond",
         shapeRaw: dia.shapeRaw,
         shapeMapped: dia.shapeMapped ?? dia.shapeRaw,
-        colorRaw: dia.fancyColor ?? dia.colorWhite,
+        colorRaw: stoneColorLabel(dia),
         weightCt: toNumber(dia.weightCt),
         qty: ci.qty,
         displayPriceUsd: display,

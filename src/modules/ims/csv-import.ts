@@ -1,5 +1,6 @@
 import { parse } from "csv-parse/sync";
 
+import { isFancyIntensity, parseFancyColor } from "@/domain";
 import {
   ImsInboundItemInputSchema,
   type ImsCsvCategory,
@@ -98,17 +99,36 @@ function toNaturalOrLab(raw: string): "NATURAL" | "LAB" | undefined {
   return undefined;
 }
 
-function splitDiamondColor(raw: string): { color: string | undefined; fancyColor: string | undefined } {
-  const v = (raw ?? "").trim();
-  if (v === "") return { color: undefined, fancyColor: undefined };
-  if (/fancy/i.test(v)) return { color: undefined, fancyColor: v };
-  return { color: v, fancyColor: undefined };
+type SplitColor = {
+  color: string | undefined;
+  fancyColor: string | undefined;
+  fancyIntensity: string | undefined;
+};
+
+/**
+ * Vendor sheets write a fancy colour either as one string ("Fancy Vivid Yellow")
+ * or as two columns, so take an explicit intensity when the sheet has one and
+ * fall back to splitting the written colour.
+ */
+function splitDiamondColor(raw: string, intensityRaw: string): SplitColor {
+  const parsed = parseFancyColor(raw);
+  const intensity = (intensityRaw ?? "").trim();
+  if (intensity && isFancyIntensity(intensity) && !parsed.fancyIntensity) {
+    // A separate Intensity column means the colour column holds the bare hue.
+    const hue = parsed.fancyColor ?? parsed.color;
+    if (hue) return { color: undefined, fancyColor: hue, fancyIntensity: intensity };
+  }
+  return {
+    color: parsed.color ?? undefined,
+    fancyColor: parsed.fancyColor ?? undefined,
+    fancyIntensity: parsed.fancyIntensity ?? undefined
+  };
 }
 
 const HEADER_SIGNALS = new Set([
   "sku", "radiiasku", "stock", "vendorsku",
   "shape", "weight", "carat", "caratweight", "weightct", "qty", "quantity",
-  "color", "clarity", "cut", "cutgrade", "lab", "certno", "certnumber",
+  "color", "intensity", "clarity", "cut", "cutgrade", "lab", "certno", "certnumber",
   "gemtype", "stonetype", "lottype", "origin", "treatment",
   "cost", "costpercarat", "pricepct",
   "metal", "jewelrytype", "materialtype", "description"
@@ -193,9 +213,9 @@ function buildRawItem(category: ImsCsvCategory, get: RowGet): Record<string, unk
   };
 
   if (category === "diamonds" || category === "gems") {
-    const { color, fancyColor } = category === "diamonds"
-      ? splitDiamondColor(get(["color"]))
-      : { color: str(get(["color"])), fancyColor: undefined };
+    const { color, fancyColor, fancyIntensity } = category === "diamonds"
+      ? splitDiamondColor(get(["color"]), get(["intensity", "fancyintensity", "colorintensity"]))
+      : { color: str(get(["color"])), fancyColor: undefined, fancyIntensity: undefined };
     const weightCt = num(get(["carat", "caratweight", "caratwt", "weight", "weightct", "carats", "ct", "totalcarat", "totalcaratweight", "tcw"]));
     // Per-carat on both sides, and the wholesale may have come from a line total,
     // so resolve that first and mirror the two rates against each other.
@@ -210,6 +230,7 @@ function buildRawItem(category: ImsCsvCategory, get: RowGet): Record<string, unk
       quantity: num(get(["quantity", "qty"])),
       color,
       fancyColor,
+      fancyIntensity,
       clarity: str(get(["clarity"])),
       cutGrade: str(get(["cut", "cutgrade"])),
       polish: str(get(["pol", "polish"])),

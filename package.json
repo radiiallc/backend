@@ -34,6 +34,7 @@
     "perf:outbound": "dotenv -e .env.dev -- tsx scripts/bulk-outbound-perf.ts",
     "smoke:memoin": "dotenv -e .env.dev -- tsx scripts/memo-in-smoke.ts",
     "smoke:pdf": "dotenv -e .env.dev -- tsx scripts/document-pdf-smoke.ts",
+    "smoke:fancycolor": "tsx scripts/fancy-color-smoke.ts",
     "mirror:prices:dev": "dotenv -e .env.dev -- tsx scripts/mirror-prices.ts",
     "mirror:prices:prod": "dotenv -e .env.local -- tsx scripts/mirror-prices.ts"
   },
