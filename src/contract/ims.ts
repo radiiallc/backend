@@ -578,6 +578,65 @@ export interface ImsParseInboundCsvResult {
   items: ImsInboundItemInput[];
 }
 
+/**
+ * Sending stock OUT in bulk is the mirror of receiving it: the rows name items
+ * that already exist rather than describing new ones, so the parse matches
+ * instead of creating. Nothing is written — this is a dry run the sender reads
+ * before the document is struck.
+ */
+export const ImsParseOutboundCsvSchema = z
+  .object({
+    docType: z.enum(["MEMO_OUT", "INVOICE", "BRAND_INVENTORY_OUT"]),
+    csv: z.string().min(1).optional(),
+    fileBase64: z.string().min(1).optional(),
+    fileName: z.string().max(255).optional(),
+    /** Narrows the search to one brand's stock, so a bare style number can't
+     *  collide with an identical one from another designer. */
+    brandOwnerId: z.string().min(1).optional()
+  })
+  .refine((d) => (d.csv ? 1 : 0) + (d.fileBase64 ? 1 : 0) === 1, {
+    message: "Provide either pasted CSV rows or an uploaded file"
+  });
+export type ImsParseOutboundCsv = z.infer<typeof ImsParseOutboundCsvSchema>;
+
+export type ImsOutboundMatchState =
+  | "matched"
+  | "notFound"
+  | "ambiguous"
+  | "unavailable"
+  | "duplicate"
+  | "badQuantity";
+
+export interface ImsOutboundMatchRow {
+  rowNumber: number;
+  /** The identifier as it was written in their file, echoed back so a rejected
+   *  row can be found and fixed without counting columns. */
+  reference: string | null;
+  state: ImsOutboundMatchState;
+  ok: boolean;
+  error: string | null;
+  inventoryItemId: string | null;
+  sku: string | null;
+  label: string | null;
+  status: ItemStatus | null;
+  /** Pieces (jewelry) or carats (parcel) still on the shelf, null when the item
+   *  is atomic and simply moves whole. */
+  availableQty: number | null;
+  availableCt: number | null;
+  requestedQty: number | null;
+}
+
+export interface ImsParseOutboundCsvResult {
+  docType: "MEMO_OUT" | "INVOICE" | "BRAND_INVENTORY_OUT";
+  sheetName: string | null;
+  totalRows: number;
+  okCount: number;
+  errorCount: number;
+  rows: ImsOutboundMatchRow[];
+  /** Ready to hand straight to createOutboundDocument. */
+  lines: ImsDocumentLineDraw[];
+}
+
 export const ImsGiaLookupSchema = z.object({
   reportNumber: z.string().trim().min(1)
 });

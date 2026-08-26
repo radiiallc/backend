@@ -65,6 +65,15 @@ async function createManyChunked<T>(
  */
 const INBOUND_TX_TIMEOUT_MS = Number(process.env.IMS_INBOUND_TX_TIMEOUT_MS ?? 120_000);
 
+/**
+ * An outbound document has the same problem going the other way: memoing a
+ * brand's whole open stock out to one store is 300+ lines, and each one costs a
+ * balance write, a memo lookup, a status update and an audit row. 320 lines
+ * runs in ~1.7s against a local database; every one of those round trips is
+ * slower against a remote one, so the 5s default is not a real budget either.
+ */
+const OUTBOUND_TX_TIMEOUT_MS = Number(process.env.IMS_OUTBOUND_TX_TIMEOUT_MS ?? 120_000);
+
 function issuedAt(isoDay: string | undefined): Date {
   return isoDay ? new Date(`${isoDay}T12:00:00.000Z`) : new Date();
 }
@@ -490,7 +499,7 @@ export async function createOutboundDocument(
     }
 
     return doc.id;
-  });
+  }, { timeout: OUTBOUND_TX_TIMEOUT_MS, maxWait: 15_000 });
 
   const created = await prisma.document.findUniqueOrThrow({
     where: { id: docId },
