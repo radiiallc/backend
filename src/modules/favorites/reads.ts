@@ -1,5 +1,11 @@
 import { Prisma, prisma } from "@/db";
-import { gemstoneVarietyDisplay, mapGemstoneShape, resolveStillImageUrl, sanitizeMediaUrl } from "@/domain";
+import {
+  gemstoneVarietyDisplay,
+  mapGemstoneShape,
+  resolveStillImageUrl,
+  sanitizeMediaUrl,
+  stoneColorLabel
+} from "@/domain";
 import type { FavoriteLine } from "@/contract";
 
 function toNumber(value: Prisma.Decimal | null | undefined): number | null {
@@ -85,7 +91,7 @@ export async function getFavoritesForBuyer(
         varietyRaw: d.origin === "Lab" ? "Lab Diamond" : "Natural Diamond",
         shapeRaw: d.shapeRaw,
         shapeMapped: d.shapeMapped ?? d.shapeRaw,
-        colorRaw: d.fancyColor ?? d.colorWhite,
+        colorRaw: stoneColorLabel(d),
         weightCt: toNumber(d.weightCt),
         displayPriceUsd: applyMarkup(toNumber(d.basePriceUsd), factor),
         displayPricePerCtUsd: applyMarkup(toNumber(d.basePricePerCtUsd), factor),

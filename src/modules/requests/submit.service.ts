@@ -1,5 +1,5 @@
 import { Prisma, prisma } from "@/db";
-import { formatRequestReference, gemstoneVarietyAbbrev } from "@/domain";
+import { formatRequestReference, gemstoneVarietyAbbrev, stoneColorLabel } from "@/domain";
 import {
   SubmitRequestBodySchema,
   type SubmitRequestInput,
@@ -180,7 +180,7 @@ export async function submitRequest(
                 varietyRaw: variety,
                 shapeRaw: dia.shapeRaw,
                 shapeMapped: dia.shapeMapped,
-                colorRaw: dia.fancyColor ?? dia.colorWhite,
+                colorRaw: stoneColorLabel(dia),
                 clarity: dia.clarity,
                 weightCt: dia.weightCt === null ? null : Number(dia.weightCt),
                 basePriceUsd,
@@ -198,7 +198,7 @@ export async function submitRequest(
               sku: dia.sku,
               varietyOrName: variety,
               stoneType: isLab ? "Lab" : "Nat",
-              color: dia.fancyColor ?? dia.colorWhite,
+              color: stoneColorLabel(dia),
               clarity: dia.clarity,
               shape: dia.shapeMapped ?? dia.shapeRaw,
               weightCt: dia.weightCt === null ? null : Number(dia.weightCt),

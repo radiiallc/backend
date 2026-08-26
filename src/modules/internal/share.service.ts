@@ -1,5 +1,5 @@
 import { prisma } from "@/db";
-import { resolveStillImageUrl, sanitizeMediaUrl } from "@/domain";
+import { resolveStillImageUrl, sanitizeMediaUrl, stoneColorLabel } from "@/domain";
 import type { ShareItem } from "@/contract";
 
 function toNum(value: unknown): number | null {
@@ -25,7 +25,7 @@ export async function getShareItems(ids: string[]): Promise<ShareItem[]> {
       type: d.origin === "Lab" ? "Lab Diamond" : "Natural Diamond",
       shape: d.shapeMapped ?? d.shapeRaw,
       carat: toNum(d.weightCt),
-      color: d.fancyColor ?? d.colorWhite,
+      color: stoneColorLabel(d),
       clarity: d.clarity,
       ratio: toNum(d.ratio),
       lab: d.certLab,

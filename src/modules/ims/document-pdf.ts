@@ -1,5 +1,6 @@
 import { Prisma, prisma } from "@/db";
 
+import { stoneColorLabel } from "@/domain";
 import { brandLogo } from "@/integrations/pdf/brand-logo";
 import { drawTable, PdfDocument, type TableColumn } from "@/integrations/pdf/pdf-writer";
 
@@ -134,7 +135,7 @@ function buildRow(line: LineForPdf): DocRow {
       stoneType,
       shape: orDash(stone.shape),
       caratFmt: weightCt ? carats(weightCt) : DASH,
-      color: orDash(stone.fancyColor || stone.color),
+      color: orDash(stoneColorLabel(stone)),
       clarity: orDash(stone.clarity),
       cut: orDash(stone.cutGrade),
       measurements,
