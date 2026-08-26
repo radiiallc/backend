@@ -17,6 +17,7 @@ import {
   ImsGiaLookupSchema,
   ImsInventoryQuerySchema,
   ImsParseInboundCsvSchema,
+  ImsParseOutboundCsvSchema,
   ImsRecordReturnSchema,
   ImsReserveItemSchema,
   ImsUpdateClientSchema,
@@ -60,6 +61,7 @@ import {
   listVocabularyFromDb
 } from "../modules/ims/reads";
 import { parseInventoryCsv, parseInventoryUpload } from "../modules/ims/csv-import";
+import { parseOutboundUpload } from "../modules/ims/outbound-import";
 import { enrichInboundCsvWithGia } from "../modules/ims/gia-enrich";
 import { annotateRestocks } from "../modules/ims/restock";
 import { lookupGiaReport } from "../modules/ims/gia.service";
@@ -437,6 +439,28 @@ imsRouter.post(
       ? await enrichInboundCsvWithGia(parsedRows)
       : parsedRows;
     res.json(await annotateRestocks(enriched, vendorId ?? null));
+  })
+);
+
+imsRouter.post(
+  "/documents/outbound/parse-csv",
+  wrap(async (req, res) => {
+    const parsed = ImsParseOutboundCsvSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid outbound import payload" });
+      return;
+    }
+    const { docType, csv, fileBase64, brandOwnerId } = parsed.data;
+    res.json(
+      await parseOutboundUpload({
+        docType,
+        csv,
+        bytes: fileBase64
+          ? Buffer.from(fileBase64.replace(/^data:[^,]*,/, ""), "base64")
+          : null,
+        brandOwnerId: brandOwnerId ?? null
+      })
+    );
   })
 );
 

@@ -10,11 +10,11 @@ import {
 
 import { isLegacyXls, isZipArchive, readWorkbookGrid, WorkbookError } from "./xlsx-import";
 
-function normalizeHeader(h: string): string {
+export function normalizeHeader(h: string): string {
   return h.split("(")[0].toLowerCase().replace(/%/g, "pct").replace(/[^a-z0-9]/g, "");
 }
 
-function hintAliases(header: string): string[] {
+export function hintAliases(header: string): string[] {
   return /\b(parcel|pair|single)\b/i.test(header) ? ["lottype"] : [];
 }
 
@@ -136,9 +136,9 @@ export function findHeaderRow(records: string[][]): number {
   return bestScore >= 2 ? best : 0;
 }
 
-type RowGet = (aliases: string[]) => string;
+export type RowGet = (aliases: string[]) => string;
 
-function makeGet(headerIndex: Map<string, number>, row: string[]): RowGet {
+export function makeGet(headerIndex: Map<string, number>, row: string[]): RowGet {
   return (aliases: string[]) => {
     for (const a of aliases) {
       const idx = headerIndex.get(a);
@@ -416,7 +416,7 @@ export function parseInventoryCsv(category: ImsCsvCategory, csvText: string): Im
   return parseRecords(category, records, null);
 }
 
-function decodeText(bytes: Buffer): string {
+export function decodeText(bytes: Buffer): string {
   if (bytes.length > 1 && bytes[0] === 0xff && bytes[1] === 0xfe) return bytes.toString("utf16le", 2);
   if (bytes.length > 1 && bytes[0] === 0xfe && bytes[1] === 0xff) {
     return bytes.subarray(2).swap16().toString("utf16le");
