@@ -36,6 +36,8 @@
     "smoke:memoin": "dotenv -e .env.dev -- tsx scripts/memo-in-smoke.ts",
     "smoke:pdf": "dotenv -e .env.dev -- tsx scripts/document-pdf-smoke.ts",
     "smoke:fancycolor": "tsx scripts/fancy-color-smoke.ts",
+    "report:fancycolor": "dotenv -e .env.dev -- tsx scripts/fancy-color-report.ts",
+    "report:fancycolor:prod": "dotenv -e .env.local -- tsx scripts/fancy-color-report.ts",
     "mirror:prices:dev": "dotenv -e .env.dev -- tsx scripts/mirror-prices.ts",
     "mirror:prices:prod": "dotenv -e .env.local -- tsx scripts/mirror-prices.ts"
   },
