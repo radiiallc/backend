@@ -32,6 +32,7 @@
     "smoke:outimport": "dotenv -e .env.dev -- tsx scripts/outbound-import-smoke.ts",
     "smoke:pdfscale": "dotenv -e .env.dev -- tsx scripts/document-pdf-scale-smoke.ts",
     "perf:outbound": "dotenv -e .env.dev -- tsx scripts/bulk-outbound-perf.ts",
+    "seed:devstock": "dotenv -e .env.dev -- tsx scripts/seed-dev-stock.ts",
     "smoke:memoin": "dotenv -e .env.dev -- tsx scripts/memo-in-smoke.ts",
     "smoke:pdf": "dotenv -e .env.dev -- tsx scripts/document-pdf-smoke.ts",
     "smoke:fancycolor": "tsx scripts/fancy-color-smoke.ts",
