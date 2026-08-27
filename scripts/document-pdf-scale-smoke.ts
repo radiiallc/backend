@@ -126,7 +126,8 @@ async function main(): Promise<void> {
 
   console.log(`\n[2] ${COUNTS.length} line counts, every page checked for ink off the paper`);
   const docIds: string[] = [];
-  let biggest: { count: number; pages: number; bytes: number; edge: number } | null = null;
+  let biggest: { count: number; pages: number; bytes: number; raw: string; edge: number } | null =
+    null;
 
   for (const n of COUNTS) {
     const ids = await ensurePieces(n);
@@ -172,6 +173,7 @@ async function main(): Promise<void> {
         count: n,
         pages: pages.length,
         bytes: built.buffer.length,
+        raw: built.buffer.toString("latin1"),
         edge: Math.min(...pages.map((pg) => Math.min(pg.minY, pg.height - pg.maxY)))
       };
       if (OUT_DIR) {
@@ -192,6 +194,9 @@ async function main(): Promise<void> {
     check("it paginates rather than piling up", biggest.pages > 1, biggest.pages);
     check("roughly 40-46 lines a page", biggest.pages >= 7 && biggest.pages <= 9, biggest.pages);
     check("the file stays a sane size", biggest.bytes < 2_000_000, biggest.bytes);
+    // A three-digit row number must survive the "#" column budget whole — an
+    // ellipsis here means the column shrank below its real content again.
+    check("row 320 keeps its full row number", biggest.raw.includes("(320)"));
   }
 
   await prisma.documentLineItem.deleteMany({ where: { documentId: { in: docIds } } });
