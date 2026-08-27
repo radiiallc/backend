@@ -59,6 +59,19 @@ async function createManyChunked<T>(
 }
 
 /**
+ * The same bounded-statement rule for an id list: `WHERE id IN (...)` of several
+ * hundred is the same oversized statement a bulk INSERT was.
+ */
+async function idsChunked(
+  ids: string[],
+  run: (batch: string[]) => Promise<unknown>
+): Promise<void> {
+  for (let i = 0; i < ids.length; i += INSERT_CHUNK) {
+    await run(ids.slice(i, i + INSERT_CHUNK));
+  }
+}
+
+/**
  * An inbound document can carry hundreds of items, and each one fans out into
  * item / detail / line / audit rows. 30s was not a real budget for that on a
  * remote database — a 374-item import legitimately needs longer.
@@ -365,27 +378,45 @@ export async function createOutboundDocument(
   const newItemStatus = NEW_ITEM_STATUS[type];
   const newLineStatus = NEW_LINE_STATUS[type];
 
-  const docId = await prisma.$transaction(async (tx) => {
-    const seq = await tx.documentSequence.upsert({
-      where: { type },
-      create: { type, lastValue: 1001 },
-      update: { lastValue: { increment: 1 } }
-    });
-    const documentNumber = `${DOC_PREFIX[type]}-${seq.lastValue}`;
+  const t0 = Date.now();
+  const mark = (label: string): void => {
+    console.log(
+      `[createOutboundDocument] ${label} @ ${Date.now() - t0}ms (type=${type}, lines=${snapshots.length})`
+    );
+  };
 
-    const doc = await tx.document.create({
-      data: {
-        type,
-        documentNumber,
-        status: type === "BRAND_INVENTORY_OUT" ? "CLOSED" : "OPEN",
-        clientId: input.clientId,
-        issueDate,
-        dueDate,
-        discountAmount: input.discountAmount ?? null,
-        notes: input.notes ?? null,
-        createdById,
-        lineItems: {
-          create: snapshots.map((s) => ({
+  let docId: string;
+  try {
+    docId = await prisma.$transaction(
+      async (tx) => {
+        mark("tx started");
+        const seq = await tx.documentSequence.upsert({
+          where: { type },
+          create: { type, lastValue: 1001 },
+          update: { lastValue: { increment: 1 } }
+        });
+        const documentNumber = `${DOC_PREFIX[type]}-${seq.lastValue}`;
+
+        const doc = await tx.document.create({
+          data: {
+            type,
+            documentNumber,
+            status: type === "BRAND_INVENTORY_OUT" ? "CLOSED" : "OPEN",
+            clientId: input.clientId,
+            issueDate,
+            dueDate,
+            discountAmount: input.discountAmount ?? null,
+            notes: input.notes ?? null,
+            createdById
+          }
+        });
+        mark("document row created");
+
+        // A nested `create` costs one round trip per line, so a 374-line memo
+        // spent 374 of them before any stock had moved. Bulk-insert instead.
+        await createManyChunked(
+          snapshots.map((s) => ({
+            documentId: doc.id,
             inventoryItemId: s.itemId,
             lineStatus: newLineStatus,
             quantity: s.quantity,
@@ -393,113 +424,202 @@ export async function createOutboundDocument(
             unitPrice: s.unitPrice,
             totalPrice: s.totalPrice,
             clientReference: s.clientReference
-          }))
-        }
-      }
-    });
+          })),
+          (b) => tx.documentLineItem.createMany({ data: b })
+        );
+        mark("line items inserted");
 
-    for (const s of snapshots) {
-      const { draw } = s;
-
-      if (draw.lot === "PARCEL" && draw.remainingAfterCt !== null) {
-        await tx.stoneDetail.update({
-          where: { inventoryItemId: s.itemId },
-          data: { remainingCt: draw.remainingAfterCt, remainingQty: draw.remainingAfterQty }
-        });
-      } else if (draw.lot === "JEWELRY" && draw.remainingAfterQty !== null) {
-        await tx.jewelryDetail.update({
-          where: { inventoryItemId: s.itemId },
-          data: { remainingQty: draw.remainingAfterQty }
-        });
-      }
-
-      if (draw.isPartial && !draw.emptied) continue;
-
-      if (s.settlesMemoLineId) {
-        const stillOutElsewhere = await tx.documentLineItem.count({
-          where: {
-            inventoryItemId: s.itemId,
-            lineStatus: "ON_MEMO",
-            id: { not: s.settlesMemoLineId }
+        // A balance write carries a per-item number, so these group by the value
+        // written rather than collapsing to a single statement. Sending whole
+        // lots — the bulk case — puts every row on the same balance, so in
+        // practice it becomes one.
+        const parcelBalances = new Map<string, { ct: number; qty: number | null; ids: string[] }>();
+        const jewelryBalances = new Map<number, string[]>();
+        for (const s of snapshots) {
+          const { draw } = s;
+          if (draw.lot === "PARCEL" && draw.remainingAfterCt !== null) {
+            const key = `${draw.remainingAfterCt}|${draw.remainingAfterQty}`;
+            const bucket = parcelBalances.get(key);
+            if (bucket) bucket.ids.push(s.itemId);
+            else {
+              parcelBalances.set(key, {
+                ct: draw.remainingAfterCt,
+                qty: draw.remainingAfterQty,
+                ids: [s.itemId]
+              });
+            }
+          } else if (draw.lot === "JEWELRY" && draw.remainingAfterQty !== null) {
+            const bucket = jewelryBalances.get(draw.remainingAfterQty);
+            if (bucket) bucket.push(s.itemId);
+            else jewelryBalances.set(draw.remainingAfterQty, [s.itemId]);
           }
-        });
-        if (stillOutElsewhere > 0) continue;
-      }
-
-      await tx.inventoryItem.update({
-        where: { id: s.itemId },
-        data: { status: newItemStatus, visibleOnPortal: false }
-      });
-      await tx.itemStatusHistory.create({
-        data: {
-          inventoryItemId: s.itemId,
-          previousStatus: s.currentStatus,
-          newStatus: newItemStatus,
-          documentId: doc.id,
-          changedById: createdById
         }
-      });
-    }
+        for (const b of parcelBalances.values()) {
+          await idsChunked(b.ids, (batch) =>
+            tx.stoneDetail.updateMany({
+              where: { inventoryItemId: { in: batch } },
+              data: { remainingCt: b.ct, remainingQty: b.qty }
+            })
+          );
+        }
+        for (const [remainingQty, ids] of jewelryBalances) {
+          await idsChunked(ids, (batch) =>
+            tx.jewelryDetail.updateMany({
+              where: { inventoryItemId: { in: batch } },
+              data: { remainingQty }
+            })
+          );
+        }
+        mark("balances written");
 
-    if (type === "INVOICE") {
-      const affectedMemoIds = new Set<string>();
+        // A partial draw leaves the lot in stock, so it gets no status change
+        // and no audit row.
+        const advancing = snapshots.filter((s) => !(s.draw.isPartial && !s.draw.emptied));
 
-      for (const s of snapshots) {
-        if (!s.settlesMemoLineId) continue;
-        const ml = await tx.documentLineItem.update({
-          where: { id: s.settlesMemoLineId },
-          data: { lineStatus: "SOLD", resolvedByDocumentId: doc.id }
-        });
-        affectedMemoIds.add(ml.documentId);
-      }
-
-      const soldFromMemo = snapshots.filter(
-        (s) => !s.settlesMemoLineId && s.currentStatus === "ON_MEMO"
-      );
-      for (const s of soldFromMemo) {
-        const memoLines = await tx.documentLineItem.findMany({
-          where: {
-            inventoryItemId: s.itemId,
-            lineStatus: "ON_MEMO",
-            document: { type: "MEMO_OUT" }
-          }
-        });
-        for (const ml of memoLines) {
-          await tx.documentLineItem.update({
-            where: { id: ml.id },
-            data: { lineStatus: "SOLD", resolvedByDocumentId: doc.id }
+        // A settling line only moves the item if it is not still out on some
+        // other document — one lookup for all of them, not one each.
+        const settling = advancing.filter((s) => s.settlesMemoLineId);
+        const heldBack = new Set<string>();
+        if (settling.length > 0) {
+          const stillOut = await tx.documentLineItem.findMany({
+            where: {
+              inventoryItemId: { in: settling.map((s) => s.itemId) },
+              lineStatus: "ON_MEMO"
+            },
+            select: { id: true, inventoryItemId: true }
           });
-          affectedMemoIds.add(ml.documentId);
-        }
-      }
-      for (const memoId of affectedMemoIds) {
-        await recomputeMemoClose(tx, memoId);
-      }
-
-      const affectedMemoInIds = new Set<string>();
-      for (const s of snapshots) {
-        if (s.draw.isPartial && !s.draw.emptied) continue;
-        const memoInLine = await tx.documentLineItem.findFirst({
-          where: {
-            inventoryItemId: s.itemId,
-            lineStatus: "IN_STOCK",
-            document: { type: "MEMO_IN", status: "OPEN" }
+          const linesByItem = new Map<string, string[]>();
+          for (const l of stillOut) {
+            const list = linesByItem.get(l.inventoryItemId);
+            if (list) list.push(l.id);
+            else linesByItem.set(l.inventoryItemId, [l.id]);
           }
-        });
-        if (!memoInLine) continue;
-        await tx.documentLineItem.update({
-          where: { id: memoInLine.id },
-          data: { lineStatus: "SOLD", resolvedByDocumentId: doc.id }
-        });
-        affectedMemoInIds.add(memoInLine.documentId);
-      }
-      for (const memoInId of affectedMemoInIds) {
-        await recomputeMemoClose(tx, memoInId, "IN_STOCK");
-      }
-    }
+          for (const s of settling) {
+            const others = (linesByItem.get(s.itemId) ?? []).filter((id) => id !== s.settlesMemoLineId);
+            if (others.length > 0) heldBack.add(s.itemId);
+          }
+        }
 
-    return doc.id;
-  }, { timeout: OUTBOUND_TX_TIMEOUT_MS, maxWait: 15_000 });
+        const moving = advancing.filter((s) => !heldBack.has(s.itemId));
+        if (moving.length > 0) {
+          await idsChunked(
+            moving.map((s) => s.itemId),
+            (batch) =>
+              tx.inventoryItem.updateMany({
+                where: { id: { in: batch } },
+                data: { status: newItemStatus, visibleOnPortal: false }
+              })
+          );
+          await createManyChunked(
+            moving.map((s) => ({
+              inventoryItemId: s.itemId,
+              previousStatus: s.currentStatus,
+              newStatus: newItemStatus,
+              documentId: doc.id,
+              changedById: createdById
+            })),
+            (b) => tx.itemStatusHistory.createMany({ data: b })
+          );
+        }
+        mark("statuses advanced");
+
+        if (type === "INVOICE") {
+          const affectedMemoIds = new Set<string>();
+
+          const settleIds = snapshots
+            .map((s) => s.settlesMemoLineId)
+            .filter((id): id is string => id !== null);
+          if (settleIds.length > 0) {
+            const settled = await tx.documentLineItem.findMany({
+              where: { id: { in: settleIds } },
+              select: { documentId: true }
+            });
+            for (const l of settled) affectedMemoIds.add(l.documentId);
+            await idsChunked(settleIds, (batch) =>
+              tx.documentLineItem.updateMany({
+                where: { id: { in: batch } },
+                data: { lineStatus: "SOLD", resolvedByDocumentId: doc.id }
+              })
+            );
+          }
+
+          // Runs after the settle above, so lines already marked SOLD there no
+          // longer match — the same order the per-item loop relied on.
+          const soldFromMemo = snapshots.filter(
+            (s) => !s.settlesMemoLineId && s.currentStatus === "ON_MEMO"
+          );
+          if (soldFromMemo.length > 0) {
+            const memoLines = await tx.documentLineItem.findMany({
+              where: {
+                inventoryItemId: { in: soldFromMemo.map((s) => s.itemId) },
+                lineStatus: "ON_MEMO",
+                document: { type: "MEMO_OUT" }
+              },
+              select: { id: true, documentId: true }
+            });
+            for (const ml of memoLines) affectedMemoIds.add(ml.documentId);
+            await idsChunked(
+              memoLines.map((l) => l.id),
+              (batch) =>
+                tx.documentLineItem.updateMany({
+                  where: { id: { in: batch } },
+                  data: { lineStatus: "SOLD", resolvedByDocumentId: doc.id }
+                })
+            );
+          }
+          for (const memoId of affectedMemoIds) {
+            await recomputeMemoClose(tx, memoId);
+          }
+          mark("memo lines settled");
+
+          const affectedMemoInIds = new Set<string>();
+          const eligible = snapshots.filter((s) => !(s.draw.isPartial && !s.draw.emptied));
+          if (eligible.length > 0) {
+            const memoInLines = await tx.documentLineItem.findMany({
+              where: {
+                inventoryItemId: { in: eligible.map((s) => s.itemId) },
+                lineStatus: "IN_STOCK",
+                document: { type: "MEMO_IN", status: "OPEN" }
+              },
+              select: { id: true, documentId: true, inventoryItemId: true }
+            });
+            // One line per item, as the per-item findFirst took.
+            const firstByItem = new Map<string, { id: string; documentId: string }>();
+            for (const l of memoInLines) {
+              if (!firstByItem.has(l.inventoryItemId)) firstByItem.set(l.inventoryItemId, l);
+            }
+            for (const l of firstByItem.values()) affectedMemoInIds.add(l.documentId);
+            await idsChunked(
+              [...firstByItem.values()].map((l) => l.id),
+              (batch) =>
+                tx.documentLineItem.updateMany({
+                  where: { id: { in: batch } },
+                  data: { lineStatus: "SOLD", resolvedByDocumentId: doc.id }
+                })
+            );
+          }
+          for (const memoInId of affectedMemoInIds) {
+            await recomputeMemoClose(tx, memoInId, "IN_STOCK");
+          }
+          mark("memo-in lines settled");
+        }
+
+        mark("tx callback returning");
+        return doc.id;
+      },
+      { timeout: OUTBOUND_TX_TIMEOUT_MS, maxWait: 15_000 }
+    );
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2028") {
+      // Ran out of transaction budget. Nothing was written — the whole thing
+      // rolls back — so say that plainly instead of a bare "Internal error".
+      return {
+        ok: false,
+        error: `This ${DOC_LABEL[type]} (${snapshots.length} lines) took too long to save and was rolled back — nothing was created. Try splitting it into smaller documents.`
+      };
+    }
+    throw e;
+  }
 
   const created = await prisma.document.findUniqueOrThrow({
     where: { id: docId },
@@ -1171,76 +1291,146 @@ export async function recordMemoReturn(
   }
   if (targetLines.length === 0) return { ok: false, error: "No matching stones to return" };
 
-  const returnDocId = await prisma.$transaction(async (tx) => {
-    const seq = await tx.documentSequence.upsert({
-      where: { type: "RETURN_MEMO_OUT" },
-      create: { type: "RETURN_MEMO_OUT", lastValue: 1001 },
-      update: { lastValue: { increment: 1 } }
-    });
-    const documentNumber = `${DOC_PREFIX.RETURN_MEMO_OUT}-${seq.lastValue}`;
+  // Returning the whole of a 300-line memo is the other half of sending it, so
+  // it gets the same treatment: read the stock once up front instead of once per
+  // line, and write in batches.
+  const returningItems = await prisma.inventoryItem.findMany({
+    where: { id: { in: targetLines.map((l) => l.inventoryItemId) } },
+    include: { stone: true, jewelry: true }
+  });
+  const returningById = new Map(returningItems.map((i) => [i.id, i]));
+  const missing = targetLines.filter((l) => !returningById.has(l.inventoryItemId));
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      error: `Inventory item(s) not found: ${missing.map((l) => l.inventoryItemId).join(", ")}`
+    };
+  }
 
-    const returnDoc = await tx.document.create({
-      data: {
-        type: "RETURN_MEMO_OUT",
-        documentNumber,
-        status: "CLOSED",
-        clientId: memo.clientId,
-        parentDocumentId: memo.id,
-        issueDate: new Date(),
-        createdById: changedById,
-        lineItems: {
-          create: targetLines.map((l) => ({
+  let returnDocId: string;
+  try {
+    returnDocId = await prisma.$transaction(
+      async (tx) => {
+        const seq = await tx.documentSequence.upsert({
+          where: { type: "RETURN_MEMO_OUT" },
+          create: { type: "RETURN_MEMO_OUT", lastValue: 1001 },
+          update: { lastValue: { increment: 1 } }
+        });
+        const documentNumber = `${DOC_PREFIX.RETURN_MEMO_OUT}-${seq.lastValue}`;
+
+        const returnDoc = await tx.document.create({
+          data: {
+            type: "RETURN_MEMO_OUT",
+            documentNumber,
+            status: "CLOSED",
+            clientId: memo.clientId,
+            parentDocumentId: memo.id,
+            issueDate: new Date(),
+            createdById: changedById
+          }
+        });
+
+        await createManyChunked(
+          targetLines.map((l) => ({
+            documentId: returnDoc.id,
             inventoryItemId: l.inventoryItemId,
             lineStatus: "RETURNED" as const
-          }))
+          })),
+          (b) => tx.documentLineItem.createMany({ data: b })
+        );
+
+        await idsChunked(
+          targetLines.map((l) => l.id),
+          (batch) =>
+            tx.documentLineItem.updateMany({
+              where: { id: { in: batch } },
+              data: { lineStatus: "RETURNED", resolvedByDocumentId: returnDoc.id }
+            })
+        );
+
+        // Each restored balance is that line's own number, so these group by the
+        // value written rather than collapsing to one statement.
+        const parcelBalances = new Map<string, { ct: number | null; qty: number | null; ids: string[] }>();
+        const jewelryBalances = new Map<number, string[]>();
+        const backInStock: Array<{ id: string; from: ItemWithDetails["status"] }> = [];
+        for (const line of targetLines) {
+          const item = returningById.get(line.inventoryItemId)!;
+
+          if (item.itemSubtype === "PARCEL" && item.stone) {
+            const restored = reverseDraw(item.stone, num(line.caratWeight), line.quantity);
+            const key = `${restored.remainingCt}|${restored.remainingQty}`;
+            const bucket = parcelBalances.get(key);
+            if (bucket) bucket.ids.push(item.id);
+            else {
+              parcelBalances.set(key, {
+                ct: restored.remainingCt,
+                qty: restored.remainingQty,
+                ids: [item.id]
+              });
+            }
+          } else if (item.itemType === "JEWELRY" && item.jewelry) {
+            const restored = reverseJewelryDraw(item.jewelry, line.quantity);
+            const bucket = jewelryBalances.get(restored);
+            if (bucket) bucket.push(item.id);
+            else jewelryBalances.set(restored, [item.id]);
+          }
+
+          if (item.status !== "IN_STOCK") backInStock.push({ id: item.id, from: item.status });
         }
-      }
-    });
 
-    for (const line of targetLines) {
-      await tx.documentLineItem.update({
-        where: { id: line.id },
-        data: { lineStatus: "RETURNED", resolvedByDocumentId: returnDoc.id }
-      });
-      const item = await tx.inventoryItem.findUniqueOrThrow({
-        where: { id: line.inventoryItemId },
-        include: { stone: true, jewelry: true }
-      });
-
-      if (item.itemSubtype === "PARCEL" && item.stone) {
-        const restored = reverseDraw(item.stone, num(line.caratWeight), line.quantity);
-        await tx.stoneDetail.update({
-          where: { inventoryItemId: item.id },
-          data: { remainingCt: restored.remainingCt, remainingQty: restored.remainingQty }
-        });
-      } else if (item.itemType === "JEWELRY" && item.jewelry) {
-        await tx.jewelryDetail.update({
-          where: { inventoryItemId: item.id },
-          data: { remainingQty: reverseJewelryDraw(item.jewelry, line.quantity) }
-        });
-      }
-
-      if (item.status === "IN_STOCK") continue;
-
-      await tx.inventoryItem.update({
-        where: { id: line.inventoryItemId },
-        data: { status: "IN_STOCK" }
-      });
-      await tx.itemStatusHistory.create({
-        data: {
-          inventoryItemId: line.inventoryItemId,
-          previousStatus: item.status,
-          newStatus: "IN_STOCK",
-          documentId: returnDoc.id,
-          changedById
+        for (const b of parcelBalances.values()) {
+          await idsChunked(b.ids, (batch) =>
+            tx.stoneDetail.updateMany({
+              where: { inventoryItemId: { in: batch } },
+              data: { remainingCt: b.ct, remainingQty: b.qty }
+            })
+          );
         }
-      });
+        for (const [remainingQty, ids] of jewelryBalances) {
+          await idsChunked(ids, (batch) =>
+            tx.jewelryDetail.updateMany({
+              where: { inventoryItemId: { in: batch } },
+              data: { remainingQty }
+            })
+          );
+        }
+
+        if (backInStock.length > 0) {
+          await idsChunked(
+            backInStock.map((b) => b.id),
+            (batch) =>
+              tx.inventoryItem.updateMany({
+                where: { id: { in: batch } },
+                data: { status: "IN_STOCK" }
+              })
+          );
+          await createManyChunked(
+            backInStock.map(({ id, from }) => ({
+              inventoryItemId: id,
+              previousStatus: from,
+              newStatus: "IN_STOCK" as const,
+              documentId: returnDoc.id,
+              changedById
+            })),
+            (b) => tx.itemStatusHistory.createMany({ data: b })
+          );
+        }
+
+        await recomputeMemoClose(tx, memo.id);
+
+        return returnDoc.id;
+      },
+      { timeout: OUTBOUND_TX_TIMEOUT_MS, maxWait: 15_000 }
+    );
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2028") {
+      return {
+        ok: false,
+        error: `This return (${targetLines.length} lines) took too long to save and was rolled back — nothing was changed. Try returning fewer lines at a time.`
+      };
     }
-
-    await recomputeMemoClose(tx, memo.id);
-
-    return returnDoc.id;
-  });
+    throw e;
+  }
 
   const [returnDocument, updatedMemo] = await Promise.all([
     prisma.document.findUniqueOrThrow({ where: { id: returnDocId }, include: IMS_DOC_INCLUDE }),
@@ -1314,28 +1504,35 @@ export async function recordVendorReturn(
     });
   }
 
-  const returnDocId = await prisma.$transaction(async (tx) => {
-    const seq = await tx.documentSequence.upsert({
-      where: { type: "RETURN_MEMO_IN" },
-      create: { type: "RETURN_MEMO_IN", lastValue: 1001 },
-      update: { lastValue: { increment: 1 } }
-    });
-    const documentNumber = `${DOC_PREFIX.RETURN_MEMO_IN}-${seq.lastValue}`;
+  let returnDocId: string;
+  try {
+    returnDocId = await prisma.$transaction(
+      async (tx) => {
+        const seq = await tx.documentSequence.upsert({
+          where: { type: "RETURN_MEMO_IN" },
+          create: { type: "RETURN_MEMO_IN", lastValue: 1001 },
+          update: { lastValue: { increment: 1 } }
+        });
+        const documentNumber = `${DOC_PREFIX.RETURN_MEMO_IN}-${seq.lastValue}`;
 
-    const returnDoc = await tx.document.create({
-      data: {
-        type: "RETURN_MEMO_IN",
-        documentNumber,
-        status: "CLOSED",
-        vendorId: memo.vendorId,
-        parentDocumentId: memo.id,
-        issueDate: new Date(),
-        createdById: actorId,
-        lineItems: {
-          create: snapshots.map((s) => {
+        const returnDoc = await tx.document.create({
+          data: {
+            type: "RETURN_MEMO_IN",
+            documentNumber,
+            status: "CLOSED",
+            vendorId: memo.vendorId,
+            parentDocumentId: memo.id,
+            issueDate: new Date(),
+            createdById: actorId
+          }
+        });
+
+        await createManyChunked(
+          snapshots.map((s) => {
             const item = itemById.get(s.itemId)!;
             const price = priceSnapshot(item, s.draw);
             return {
+              documentId: returnDoc.id,
               inventoryItemId: s.itemId,
               lineStatus: "RETURNED" as const,
               quantity: price.quantity,
@@ -1343,49 +1540,91 @@ export async function recordVendorReturn(
               unitPrice: price.unitPrice,
               totalPrice: price.totalPrice
             };
-          })
+          }),
+          (b) => tx.documentLineItem.createMany({ data: b })
+        );
+
+        const parcelBalances = new Map<string, { ct: number; qty: number | null; ids: string[] }>();
+        const jewelryBalances = new Map<number, string[]>();
+        for (const s of snapshots) {
+          const { draw } = s;
+          if (draw.lot === "PARCEL" && draw.remainingAfterCt !== null) {
+            const key = `${draw.remainingAfterCt}|${draw.remainingAfterQty}`;
+            const bucket = parcelBalances.get(key);
+            if (bucket) bucket.ids.push(s.itemId);
+            else {
+              parcelBalances.set(key, {
+                ct: draw.remainingAfterCt,
+                qty: draw.remainingAfterQty,
+                ids: [s.itemId]
+              });
+            }
+          } else if (draw.lot === "JEWELRY" && draw.remainingAfterQty !== null) {
+            const bucket = jewelryBalances.get(draw.remainingAfterQty);
+            if (bucket) bucket.push(s.itemId);
+            else jewelryBalances.set(draw.remainingAfterQty, [s.itemId]);
+          }
         }
-      }
-    });
-
-    for (const s of snapshots) {
-      const { draw } = s;
-      if (draw.lot === "PARCEL" && draw.remainingAfterCt !== null) {
-        await tx.stoneDetail.update({
-          where: { inventoryItemId: s.itemId },
-          data: { remainingCt: draw.remainingAfterCt, remainingQty: draw.remainingAfterQty }
-        });
-      } else if (draw.lot === "JEWELRY" && draw.remainingAfterQty !== null) {
-        await tx.jewelryDetail.update({
-          where: { inventoryItemId: s.itemId },
-          data: { remainingQty: draw.remainingAfterQty }
-        });
-      }
-
-      await tx.documentLineItem.update({
-        where: { id: s.lineId },
-        data: { lineStatus: "RETURNED", resolvedByDocumentId: returnDoc.id }
-      });
-
-      await tx.inventoryItem.update({
-        where: { id: s.itemId },
-        data: { status: "RETURNED", visibleOnPortal: false }
-      });
-      await tx.itemStatusHistory.create({
-        data: {
-          inventoryItemId: s.itemId,
-          previousStatus: s.currentStatus,
-          newStatus: "RETURNED",
-          documentId: returnDoc.id,
-          changedById: actorId
+        for (const b of parcelBalances.values()) {
+          await idsChunked(b.ids, (batch) =>
+            tx.stoneDetail.updateMany({
+              where: { inventoryItemId: { in: batch } },
+              data: { remainingCt: b.ct, remainingQty: b.qty }
+            })
+          );
         }
-      });
+        for (const [remainingQty, ids] of jewelryBalances) {
+          await idsChunked(ids, (batch) =>
+            tx.jewelryDetail.updateMany({
+              where: { inventoryItemId: { in: batch } },
+              data: { remainingQty }
+            })
+          );
+        }
+
+        await idsChunked(
+          snapshots.map((s) => s.lineId),
+          (batch) =>
+            tx.documentLineItem.updateMany({
+              where: { id: { in: batch } },
+              data: { lineStatus: "RETURNED", resolvedByDocumentId: returnDoc.id }
+            })
+        );
+
+        await idsChunked(
+          snapshots.map((s) => s.itemId),
+          (batch) =>
+            tx.inventoryItem.updateMany({
+              where: { id: { in: batch } },
+              data: { status: "RETURNED", visibleOnPortal: false }
+            })
+        );
+        await createManyChunked(
+          snapshots.map((s) => ({
+            inventoryItemId: s.itemId,
+            previousStatus: s.currentStatus,
+            newStatus: "RETURNED" as const,
+            documentId: returnDoc.id,
+            changedById: actorId
+          })),
+          (b) => tx.itemStatusHistory.createMany({ data: b })
+        );
+
+        await recomputeMemoClose(tx, memo.id, "IN_STOCK");
+
+        return returnDoc.id;
+      },
+      { timeout: OUTBOUND_TX_TIMEOUT_MS, maxWait: 15_000 }
+    );
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2028") {
+      return {
+        ok: false,
+        error: `This return (${snapshots.length} lines) took too long to save and was rolled back — nothing was changed. Try returning fewer lines at a time.`
+      };
     }
-
-    await recomputeMemoClose(tx, memo.id, "IN_STOCK");
-
-    return returnDoc.id;
-  });
+    throw e;
+  }
 
   const [returnDocument, updatedMemo] = await Promise.all([
     prisma.document.findUniqueOrThrow({ where: { id: returnDocId }, include: IMS_DOC_INCLUDE }),
