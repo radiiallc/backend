@@ -379,7 +379,7 @@ async function documentTests(): Promise<void> {
       );
       check(
         `${doc.type}: renders a total with a currency symbol`,
-        /\((Total|Declared value): -?\$[\d,.]+\)/.test(raw)
+        /\((Grand Total|Total|Declared value): -?\$[\d,.]+\)/.test(raw)
       );
     }
     const label = doc.documentNumber || doc.externalReference;
@@ -430,15 +430,15 @@ async function stonesTemplateTest(): Promise<void> {
     id: "synthetic-memo",
     type: "MEMO_OUT",
     documentNumber: "MEM-9001",
-    externalReference: null,
+    externalReference: "Arden job 12",
     status: "OPEN",
     vendorId: null,
     vendor: null,
     clientId: "c1",
-    client: { name: "Reinstein Ross" },
+    client: { name: "Reinstein Ross", shippingAddress: "227 Mulberry St\nNew York, NY 10012" },
     issueDate,
     dueDate,
-    discountAmount: null,
+    discountAmount: 100,
     notes: null,
     emailedAt: null,
     quickbooksSyncedAt: null,
@@ -473,13 +473,32 @@ async function stonesTemplateTest(): Promise<void> {
   verifyNoCellCollisions("memo out stones", buffer);
   check("stones template goes landscape", raw.includes("/MediaBox [0 0 792 612]"));
   check("letterhead draws the logo, not the wordmark", raw.includes("/Im0 Do") && !raw.includes("(RADIIA)"));
-  check("renders the To: party", raw.includes("(Reinstein Ross)"));
-  check("renders the return-by date", raw.includes("(Return by:)"));
-  check("renders September 8, 2026 due date", raw.includes("(September 8, 2026)"));
+  check("renders the letterhead contact line", raw.includes("212.221.3250 | production@radiia.co"));
+  check("renders the Memo To: party", raw.includes("(Memo To:)") && raw.includes("(Reinstein Ross)"));
+  check(
+    "renders the client shipping address",
+    raw.includes("(227 Mulberry St)") && raw.includes("(New York, NY 10012)")
+  );
+  check("renders Net-day terms from the return date", raw.includes("Terms: Net 14"));
+  check("renders the return-by date", raw.includes("Return by: September 8, 2026"));
+  check("renders the doc-level client ref", raw.includes("Client ref: Arden job 12"));
   check("renders the stone column headers", raw.includes("(Lot / SKU)") && raw.includes("(Cert #)"));
+  check("renders the Qty column header", raw.includes("(Qty)"));
   check("renders Price / ct", raw.includes("(Price / ct)"));
   check("renders the per-line client reference", raw.includes("(Client ref A)"));
   check("renders a total weight in carats", /\(Total weight: [\d,.]+ ct\)/.test(raw));
+  // Every synthetic line is a weight-only draw (quantity null), so no piece
+  // count may be invented: no qty total, and no defaulted per-line "1".
+  check("null quantities are never summed into a qty total", !raw.includes("(Total qty:"));
+  check("renders the subtotal", /\(Subtotal: \$[\d,.]+\)/.test(raw));
+  check("renders the discount line", /\(Discount: -\$100\.00\)/.test(raw));
+  check("renders the grand total", /\(Grand Total: \$[\d,.]+\)/.test(raw));
+  check("renders the declaration heading", raw.includes("(Declaration:)"));
+  // Single words only — the greedy wrap may break any multi-word phrase across lines.
+  check(
+    "renders the declaration body",
+    raw.includes("memorandum") && raw.includes("guaranteeing")
+  );
   check("renders the line count footer", /\(\d+ lines?\)/.test(raw));
   // A SKU longer than its column is truncated with an ellipsis rather than
   // overrunning the neighbouring cell, so accept either form here.
