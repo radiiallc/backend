@@ -702,56 +702,125 @@ async function voidOutboundDocument(
 
   const drewStock = doc.type === "INVOICE" || doc.type === "MEMO_OUT";
 
-  await prisma.$transaction(async (tx) => {
-    for (const line of doc.lineItems) {
-      const item = line.inventoryItem;
-      const stone = item.stone;
-      const isParcelLine = drewStock && item.itemSubtype === "PARCEL" && stone !== null;
-
-      if (isParcelLine && stone) {
-        const restored = reverseDraw(stone, num(line.caratWeight), line.quantity);
-        await tx.stoneDetail.update({
-          where: { inventoryItemId: item.id },
-          data: { remainingCt: restored.remainingCt, remainingQty: restored.remainingQty }
-        });
-      } else if (drewStock && item.itemType === "JEWELRY" && item.jewelry) {
-        await tx.jewelryDetail.update({
-          where: { inventoryItemId: item.id },
-          data: { remainingQty: reverseJewelryDraw(item.jewelry, line.quantity) }
-        });
-      }
-
-      const history = await tx.itemStatusHistory.findFirst({
-        where: { inventoryItemId: item.id, documentId: doc.id },
-        orderBy: { changedAt: "desc" }
-      });
-      const priorStatus = history?.previousStatus;
-      if (!priorStatus) continue;
-
-      await tx.inventoryItem.update({
-        where: { id: item.id },
-        data: { status: priorStatus }
-      });
-      await tx.documentLineItem.update({
-        where: { id: line.id },
-        data: { lineStatus: priorStatus === "ON_MEMO" ? "ON_MEMO" : "IN_STOCK" }
-      });
-      await tx.itemStatusHistory.create({
-        data: {
-          inventoryItemId: item.id,
-          previousStatus: history.newStatus,
-          newStatus: priorStatus,
-          documentId: doc.id,
-          changedById: actorId
-        }
-      });
-    }
-
-    await tx.document.update({
-      where: { id: doc.id },
-      data: { status: "VOID", closeReason: null }
-    });
+  // Undoing a 374-line memo is the same scale as making one, so it reads the
+  // audit trail once up front and writes in batches rather than per line.
+  const historyRows = await prisma.itemStatusHistory.findMany({
+    where: { documentId: doc.id, inventoryItemId: { in: doc.lineItems.map((l) => l.inventoryItemId) } },
+    orderBy: { changedAt: "desc" },
+    select: { inventoryItemId: true, previousStatus: true, newStatus: true }
   });
+  const latestByItem = new Map<string, (typeof historyRows)[number]>();
+  for (const h of historyRows) {
+    if (!latestByItem.has(h.inventoryItemId)) latestByItem.set(h.inventoryItemId, h);
+  }
+
+  try {
+    await prisma.$transaction(
+      async (tx) => {
+        const parcelBalances = new Map<string, { ct: number | null; qty: number | null; ids: string[] }>();
+        const jewelryBalances = new Map<number, string[]>();
+        // Grouped by the status being restored — a memo put everything in the
+        // same place, so in practice each of these is one statement.
+        const statusRestores = new Map<string, string[]>();
+        const lineRestores = new Map<string, string[]>();
+        const historyWrites: Prisma.ItemStatusHistoryCreateManyInput[] = [];
+
+        for (const line of doc.lineItems) {
+          const item = line.inventoryItem;
+          const stone = item.stone;
+          const isParcelLine = drewStock && item.itemSubtype === "PARCEL" && stone !== null;
+
+          if (isParcelLine && stone) {
+            const restored = reverseDraw(stone, num(line.caratWeight), line.quantity);
+            const key = `${restored.remainingCt}|${restored.remainingQty}`;
+            const bucket = parcelBalances.get(key);
+            if (bucket) bucket.ids.push(item.id);
+            else {
+              parcelBalances.set(key, {
+                ct: restored.remainingCt,
+                qty: restored.remainingQty,
+                ids: [item.id]
+              });
+            }
+          } else if (drewStock && item.itemType === "JEWELRY" && item.jewelry) {
+            const restored = reverseJewelryDraw(item.jewelry, line.quantity);
+            const bucket = jewelryBalances.get(restored);
+            if (bucket) bucket.push(item.id);
+            else jewelryBalances.set(restored, [item.id]);
+          }
+
+          const history = latestByItem.get(item.id);
+          const priorStatus = history?.previousStatus;
+          if (!priorStatus) continue;
+
+          const byStatus = statusRestores.get(priorStatus);
+          if (byStatus) byStatus.push(item.id);
+          else statusRestores.set(priorStatus, [item.id]);
+
+          const lineStatus = priorStatus === "ON_MEMO" ? "ON_MEMO" : "IN_STOCK";
+          const byLine = lineRestores.get(lineStatus);
+          if (byLine) byLine.push(line.id);
+          else lineRestores.set(lineStatus, [line.id]);
+
+          historyWrites.push({
+            inventoryItemId: item.id,
+            previousStatus: history!.newStatus,
+            newStatus: priorStatus,
+            documentId: doc.id,
+            changedById: actorId
+          });
+        }
+
+        for (const b of parcelBalances.values()) {
+          await idsChunked(b.ids, (batch) =>
+            tx.stoneDetail.updateMany({
+              where: { inventoryItemId: { in: batch } },
+              data: { remainingCt: b.ct, remainingQty: b.qty }
+            })
+          );
+        }
+        for (const [remainingQty, ids] of jewelryBalances) {
+          await idsChunked(ids, (batch) =>
+            tx.jewelryDetail.updateMany({
+              where: { inventoryItemId: { in: batch } },
+              data: { remainingQty }
+            })
+          );
+        }
+        for (const [status, ids] of statusRestores) {
+          await idsChunked(ids, (batch) =>
+            tx.inventoryItem.updateMany({
+              where: { id: { in: batch } },
+              data: { status: status as ItemWithDetails["status"] }
+            })
+          );
+        }
+        for (const [lineStatus, ids] of lineRestores) {
+          await idsChunked(ids, (batch) =>
+            tx.documentLineItem.updateMany({
+              where: { id: { in: batch } },
+              data: { lineStatus: lineStatus as "ON_MEMO" | "IN_STOCK" }
+            })
+          );
+        }
+        await createManyChunked(historyWrites, (b) => tx.itemStatusHistory.createMany({ data: b }));
+
+        await tx.document.update({
+          where: { id: doc.id },
+          data: { status: "VOID", closeReason: null }
+        });
+      },
+      { timeout: OUTBOUND_TX_TIMEOUT_MS, maxWait: 15_000 }
+    );
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2028") {
+      return {
+        ok: false,
+        error: `Voiding this ${label} (${doc.lineItems.length} lines) took too long and was rolled back — nothing was changed.`
+      };
+    }
+    throw e;
+  }
 
   const updated = await prisma.document.findUniqueOrThrow({
     where: { id: doc.id },

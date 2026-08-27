@@ -15,11 +15,13 @@
  *   npm run perf:outbound                 # 374 lines, the real file's size
  *   npm run perf:outbound -- 800          # push it further
  *   npm run perf:outbound -- --budget     # check the timeout refusal is clean
+ *   npm run perf:outbound -- --void       # void + delete a memo that size
  */
 import { PrismaClient } from "@prisma/client";
 
 const args = process.argv.slice(2);
 const BUDGET_CHECK = args.includes("--budget");
+const VOID_CHECK = args.includes("--void");
 const LINES = Number(args.find((a) => !a.startsWith("--")) ?? 374);
 const INVOICE_SLICE = 50;
 const PREFIX = "SMOKE-BULK";
@@ -55,7 +57,8 @@ function project(count: number): string {
 
 async function main(): Promise<void> {
   const { prisma } = await import("@/db");
-  const { createOutboundDocument, recordMemoReturn } = await import("@/modules/ims/documents.service");
+  const { createOutboundDocument, recordMemoReturn, voidDocument, deleteDocument } =
+    await import("@/modules/ims/documents.service");
   const { createInventoryItem } = await import("@/modules/ims/inventory.service");
 
   const user = await prisma.user.findFirstOrThrow({ where: { role: "ADMIN" } });
@@ -107,6 +110,35 @@ async function main(): Promise<void> {
     console.log(`\n  ${clean ? "ok  " : "FAIL"} an over-budget save refuses cleanly and writes nothing`);
     await cleanup(prisma, ids, [store.id, brand.id]);
     process.exitCode = clean ? 0 : 1;
+    return;
+  }
+
+  if (VOID_CHECK && memo.result.ok) {
+    // Undoing a memo this size is the same scale problem as making one, and it
+    // is the step that has to work before anyone can correct a mistake.
+    console.log(`\nvoiding that ${LINES}-line memo...`);
+    const voided = await countingFrom(() => voidDocument(memo.result.ok ? memo.result.document.id : "", user.id));
+    console.log(`  ${voided.result.ok ? "OK" : "FAILED"} in ${voided.ms} ms · ${voided.queries} round trips`);
+    if (!voided.result.ok) console.log(`  error: ${voided.result.error}`);
+    console.log(`  projected wall clock remote: ${project(voided.queries)}`);
+
+    const back = await prisma.inventoryItem.count({ where: { id: { in: ids }, status: "IN_STOCK" } });
+    const lots = await prisma.jewelryDetail.count({
+      where: { inventoryItemId: { in: ids }, remainingQty: { equals: null } }
+    });
+    const drawnDown = await prisma.jewelryDetail.findMany({
+      where: { inventoryItemId: { in: ids } },
+      select: { quantity: true, remainingQty: true }
+    });
+    const restored = drawnDown.filter((d) => (d.remainingQty ?? d.quantity) === d.quantity).length;
+    console.log(`  back IN_STOCK: ${back}/${ids.length} · balances restored: ${restored}/${drawnDown.length}${lots ? ` (${lots} null)` : ""}`);
+
+    const del = await countingFrom(() => deleteDocument(memo.result.ok ? memo.result.document.id : ""));
+    console.log(`  delete after void: ${del.result.ok ? "OK" : "FAILED"} · ${del.queries} round trips`);
+    if (!del.result.ok) console.log(`  error: ${del.result.error}`);
+
+    await cleanup(prisma, ids, [store.id, brand.id]);
+    process.exitCode = voided.result.ok && back === ids.length && restored === drawnDown.length ? 0 : 1;
     return;
   }
 
