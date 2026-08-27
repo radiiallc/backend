@@ -84,6 +84,8 @@ async function main(): Promise<void> {
   const header = splitRow(rows[0]).map((h) => h.toLowerCase());
   const at = (name: string) => header.indexOf(name);
   const iSku = at("sku");
+  // Exports taken after 08-27 carry the designer's style number too.
+  const iStyle = at("vendor sku");
   const iItem = at("item");
   const iWholesale = at("wholesale");
   if (iSku < 0) {
@@ -100,6 +102,7 @@ async function main(): Promise<void> {
     .map(splitRow)
     .map((c) => ({
       sku: c[iSku],
+      style: iStyle >= 0 ? c[iStyle] : "",
       name: iItem >= 0 ? c[iItem] : "",
       wholesale: Number(String(iWholesale >= 0 ? c[iWholesale] : "").replace(/[^0-9.]/g, "")) || 1495
     }))
@@ -127,6 +130,7 @@ async function main(): Promise<void> {
       prisma.inventoryItem.create({
         data: {
           sku: r.sku,
+          vendorSku: r.style || null,
           itemName: r.name || r.sku,
           itemType: "JEWELRY",
           status: "IN_STOCK",
