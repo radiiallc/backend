@@ -39,7 +39,10 @@
     "report:fancycolor": "dotenv -e .env.dev -- tsx scripts/fancy-color-report.ts",
     "report:fancycolor:prod": "dotenv -e .env.local -- tsx scripts/fancy-color-report.ts",
     "mirror:prices:dev": "dotenv -e .env.dev -- tsx scripts/mirror-prices.ts",
-    "mirror:prices:prod": "dotenv -e .env.local -- tsx scripts/mirror-prices.ts"
+    "mirror:prices:prod": "dotenv -e .env.local -- tsx scripts/mirror-prices.ts",
+    "smoke:sku": "dotenv -e .env.dev -- tsx scripts/sku-copy-smoke.ts",
+    "sku:vendor:dev": "dotenv -e .env.dev -- tsx scripts/sku-from-vendor.ts",
+    "sku:vendor:prod": "dotenv -e .env.local -- tsx scripts/sku-from-vendor.ts"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",

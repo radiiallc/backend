@@ -49,6 +49,18 @@ function isUniqueViolation(e: unknown): boolean {
   return e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002";
 }
 
+/**
+ * A RADIIA SKU is the vendor/brand's own SKU unless someone deliberately
+ * assigns a different one, so a document shows a client the number the brand
+ * knows the piece by. An internal RAD-#### is only the fallback: stock that
+ * arrives with no vendor SKU to copy, or whose copy is already taken (`sku` is
+ * unique, and two vendors may use the same style number).
+ *
+ * This pattern is what tells a copied SKU from a minted one — the backfill in
+ * scripts/sku-from-vendor.ts rewrites only SKUs that match it.
+ */
+export const MINTED_SKU = /^RAD-0\d+$/;
+
 async function mintSku(): Promise<string> {
   const seq = await prisma.skuSequence.upsert({
     where: { key: "global" },
@@ -208,8 +220,12 @@ export async function createInventoryItem(
     detail = { ...core, sku: "", material: { create: { ...input.material } } };
   }
 
+  // The vendor's own number is this item's SKU when it is free; a unique
+  // violation on that first attempt falls through to a minted RAD-####.
+  const copied = (input.vendorSku ?? "").trim();
+
   for (let attempt = 0; attempt < 3; attempt++) {
-    const sku = await mintSku();
+    const sku = attempt === 0 && copied ? copied : await mintSku();
     try {
       const created = await prisma.inventoryItem.create({
         data: { ...detail, sku },
