@@ -1084,13 +1084,13 @@ export async function createInboundDocument(
     dueDate = termDays ? new Date(issueDate.getTime() + termDays * 86_400_000) : null;
   }
 
-  const providedSkus = input.items.map((it) => (it.sku ?? "").trim() || null);
-  const providedList = providedSkus.filter((s): s is string => s !== null);
+  const explicitSkus = input.items.map((it) => (it.sku ?? "").trim() || null);
+  const explicitList = explicitSkus.filter((s): s is string => s !== null);
 
-  if (new Set(providedList).size !== providedList.length) {
+  if (new Set(explicitList).size !== explicitList.length) {
     const seen = new Set<string>();
     const dupes = Array.from(
-      new Set(providedList.filter((s) => (seen.has(s) ? true : (seen.add(s), false))))
+      new Set(explicitList.filter((s) => (seen.has(s) ? true : (seen.add(s), false))))
     );
     return {
       ok: false,
@@ -1099,9 +1099,9 @@ export async function createInboundDocument(
   }
 
   const existingBySku = new Map<string, ExistingItem>();
-  if (providedList.length > 0) {
+  if (explicitList.length > 0) {
     const rows = await prisma.inventoryItem.findMany({
-      where: { sku: { in: providedList } },
+      where: { sku: { in: explicitList } },
       select: RESTOCK_ITEM_SELECT
     });
     for (const row of rows) existingBySku.set(row.sku, row);
@@ -1109,13 +1109,37 @@ export async function createInboundDocument(
 
   const restockPlans = new Map<number, RestockPlan>();
   for (let i = 0; i < input.items.length; i++) {
-    const sku = providedSkus[i];
+    const sku = explicitSkus[i];
     const existing = sku === null ? undefined : existingBySku.get(sku);
     if (!existing) continue;
     const resolved = resolveRestock(existing, input.items[i]);
     if (!resolved.ok) return { ok: false, error: resolved.error };
     restockPlans.set(i, resolved.plan);
   }
+
+  // A row that names no RADIIA SKU takes the vendor/brand's own number, so the
+  // memo shows the client the SKU the brand knows the piece by. Naming an
+  // existing SKU outright is the one thing that tops up a lot (above); a copy
+  // never does — where the number is already taken, by stock on the books or by
+  // an earlier row of this same upload, the row gets a minted RAD-#### instead
+  // of merging into someone else's item.
+  const claimed = new Set(explicitList);
+  const copyCandidates = input.items.map((it, i) =>
+    explicitSkus[i] !== null ? null : (it.vendorSku ?? "").trim() || null
+  );
+  const candidateList = [...new Set(copyCandidates.filter((s): s is string => s !== null))];
+  if (candidateList.length > 0) {
+    const taken = await prisma.inventoryItem.findMany({
+      where: { sku: { in: candidateList } },
+      select: { sku: true }
+    });
+    for (const t of taken) claimed.add(t.sku);
+  }
+  const copiedSkus = copyCandidates.map((c) => {
+    if (c === null || claimed.has(c)) return null;
+    claimed.add(c);
+    return c;
+  });
 
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
@@ -1128,11 +1152,19 @@ export async function createInboundDocument(
       const docId = await prisma.$transaction(
         async (tx) => {
           mark("tx started");
-          const needsMint = providedSkus.filter((s, i) => s === null && !restockPlans.has(i)).length;
+          // Reaching a retry means some SKU collided anyway (a concurrent
+          // upload claiming the same vendor number). Only a minted one is
+          // guaranteed free, so later attempts stop copying.
+          const copies = attempt === 0 ? copiedSkus : copiedSkus.map(() => null);
+          const needsMint = explicitSkus.filter(
+            (s, i) => s === null && copies[i] === null && !restockPlans.has(i)
+          ).length;
           const minted = await mintSkuBatch(tx, needsMint);
           mark("skus minted");
           let mi = 0;
-          const skus = providedSkus.map((s, i) => (restockPlans.has(i) ? s! : (s ?? minted[mi++])));
+          const skus = explicitSkus.map((s, i) =>
+            restockPlans.has(i) ? s! : (s ?? copies[i] ?? minted[mi++])
+          );
 
           const lines: Array<({ inventoryItemId: string } & ReturnType<typeof costSnapshot>) | null> =
             new Array(input.items.length).fill(null);
