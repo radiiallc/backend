@@ -72,6 +72,7 @@ async function main(): Promise<void> {
 
   const plans: Plan[] = [];
   const assigned: string[] = [];
+  const alreadyCopied: string[] = [];
   const noVendorSku: string[] = [];
   const collides: Array<{ sku: string; wanted: string; why: string }> = [];
 
@@ -97,6 +98,12 @@ async function main(): Promise<void> {
       noVendorSku.push(it.sku);
       continue;
     }
+    // A vendor style number that happens to look minted is already where it
+    // belongs; without this it would read as colliding with itself.
+    if (wanted === it.sku) {
+      alreadyCopied.push(it.sku);
+      continue;
+    }
     if (shared.has(wanted)) {
       collides.push({ sku: it.sku, wanted, why: "another item in scope has the same vendor SKU" });
       continue;
@@ -114,6 +121,7 @@ async function main(): Promise<void> {
 
   console.log(
     `\n  ${plans.length} to rewrite · ${assigned.length} already have an assigned SKU · ` +
+      `${alreadyCopied.length} already match · ` +
       `${noVendorSku.length} have no vendor SKU to copy · ${collides.length} would collide`
   );
   for (const c of collides) {
