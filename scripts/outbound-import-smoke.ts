@@ -64,7 +64,11 @@ async function main(): Promise<void> {
   const ring = await piece("DPGRYDI", 1, "Assorted drop ring");
   const band = await piece("D100SEMI", 4, "Semi band");
 
-  const run = (csv: string, docType: "MEMO_OUT" | "INVOICE" = "MEMO_OUT", scoped = true) =>
+  const run = (
+    csv: string,
+    docType: "MEMO_OUT" | "INVOICE" | "BRAND_INVENTORY_OUT" = "MEMO_OUT",
+    scoped = true
+  ) =>
     parseOutboundUpload({ docType, csv, brandOwnerId: scoped ? brand.id : null });
 
   console.log("\n[1] matching by RADIIA SKU");
@@ -121,17 +125,23 @@ async function main(): Promise<void> {
   const r8d = await run(`RADIIA SKU,Quantity\n${ring.sku},3\n`);
   check("a quantity on a single piece is refused, not ignored", r8d.rows[0].state === "badQuantity", r8d.rows[0]);
 
-  console.log("\n[9] an item already out cannot go out again");
+  // This section used to assert that a second memo REFUSES an item already out.
+  // That is no longer the truth: a piece out with a store can be handed on to a
+  // stylist, and the new memo resolves the old one in place of a Return Memo
+  // Out. Both doors are open; a Brand Out is the one that still refuses.
+  console.log("\n[9] an item already out can move to a new memo");
   const sent = await createOutboundDocument(
     { type: "MEMO_OUT", clientId: store.id, inventoryItemIds: [ring.id] } as never,
     user.id
   );
   check("it goes out on a memo first", sent.ok, sent.ok ? undefined : sent.error);
   const r9 = await run(`RADIIA SKU\n${ring.sku}\n`);
-  check("a second memo refuses it", r9.rows[0].state === "unavailable", r9.rows[0]);
-  check("and says why in plain words", (r9.rows[0].error ?? "").includes("on memo"), r9.rows[0].error);
+  check("a second memo accepts it — that is the hand-off", r9.rows[0].state === "matched", r9.rows[0]);
+  check("with no complaint to make", r9.rows[0].error === null, r9.rows[0].error);
   const r9b = await run(`RADIIA SKU\n${ring.sku}\n`, "INVOICE");
   check("but an invoice accepts it — that is the sale", r9b.okCount === 1, r9b.rows[0]);
+  const r9c = await run(`RADIIA SKU\n${ring.sku}\n`, "BRAND_INVENTORY_OUT");
+  check("a brand return still refuses it", r9c.rows[0].state === "unavailable", r9c.rows[0]);
 
   console.log("\n[10] the sheet as Excel actually hands it over");
   const r10 = await run(

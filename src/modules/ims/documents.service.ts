@@ -312,25 +312,49 @@ export async function createOutboundDocument(
     }
   }
 
+  /**
+   * Lines whose stock is already out on a memo and so must not be drawn from
+   * the safe a second time.
+   *
+   * An INVOICE looks only at memos to the SAME client: that is the settle case,
+   * where the client is buying what they are already holding. A slice out to
+   * someone else is not theirs to settle, so it stays a fresh draw against what
+   * is left — the documented "a client holding 4 ct can still buy 2 more".
+   *
+   * A MEMO_OUT is the opposite: whoever holds it, the piece is moving to a new
+   * memo, so the lookup is unscoped and only reaches items that are ON_MEMO —
+   * an item still in the safe is an ordinary draw.
+   */
   const memoLineByItem = new Map<string, { id: string; caratWeight: number | null; quantity: number | null }>();
-  if (type === "INVOICE") {
+  const transferring = type === "MEMO_OUT";
+
+  /** Divisible lots keep a balance, so they are the ones a settle protects from
+   *  being drawn a second time. An atomic piece has no balance to double-spend. */
+  const divisibleById = new Map(
+    items.map((i) => [i.id, i.itemSubtype === "PARCEL" || i.itemType === "JEWELRY"])
+  );
+
+  const collectMemoLines = async (
+    scopeIds: string[],
+    clientScoped: boolean,
+    tooMany: (sku: string) => string
+  ): Promise<{ ok: false; error: string } | null> => {
+    if (scopeIds.length === 0) return null;
     const openMemoLines = await prisma.documentLineItem.findMany({
       where: {
-        inventoryItemId: { in: ids },
+        inventoryItemId: { in: scopeIds },
         lineStatus: "ON_MEMO",
-        document: { type: "MEMO_OUT", clientId: input.clientId }
+        document: clientScoped
+          ? { type: "MEMO_OUT", clientId: input.clientId }
+          : { type: "MEMO_OUT" }
       },
       select: { id: true, inventoryItemId: true, caratWeight: true, quantity: true }
     });
     for (const ml of openMemoLines) {
       const item = items.find((i) => i.id === ml.inventoryItemId);
-      const divisible = item != null && (item.itemSubtype === "PARCEL" || item.itemType === "JEWELRY");
-      if (!item || !divisible) continue;
+      if (!item || !divisibleById.get(item.id)) continue;
       if (memoLineByItem.has(ml.inventoryItemId)) {
-        return {
-          ok: false,
-          error: `${item.sku} is out on more than one open memo to this client — record a return on one of them before invoicing`
-        };
+        return { ok: false, error: tooMany(item.sku) };
       }
       memoLineByItem.set(ml.inventoryItemId, {
         id: ml.id,
@@ -338,7 +362,37 @@ export async function createOutboundDocument(
         quantity: ml.quantity
       });
     }
+    return null;
+  };
+
+  if (type === "INVOICE") {
+    // The client is buying what they are already holding. Scoped to them on
+    // purpose: a slice out to somebody else is not theirs to settle, so it stays
+    // a fresh draw against what is left — the documented "a client holding 4 ct
+    // can still buy 2 more".
+    const scoped = await collectMemoLines(
+      ids,
+      true,
+      (sku) =>
+        `${sku} is out on more than one open memo to this client — record a return on one of them before invoicing`
+    );
+    if (scoped) return scoped;
   }
+
+  // Whatever is left that is ON_MEMO is out with somebody else, and for a lot
+  // that means the safe is empty — ON_MEMO is only reached once the last piece
+  // leaves. So there is nothing to draw from and only one thing the document can
+  // mean: the goods come back off that memo. An invoice sells them to the new
+  // client, a memo hands them on. Either way the old line is resolved below.
+  const strandedOnMemo = items
+    .filter((i) => i.status === "ON_MEMO" && !memoLineByItem.has(i.id))
+    .map((i) => i.id);
+  const unscoped = await collectMemoLines(strandedOnMemo, false, (sku) =>
+    transferring
+      ? `${sku} is out on more than one open memo — record a return on one of them before moving it`
+      : `${sku} is out on more than one open memo — record a return on one of them before invoicing`
+  );
+  if (unscoped) return unscoped;
 
   const byId = new Map(items.map((i) => [i.id, i]));
   const snapshots: LineSnapshot[] = [];
@@ -477,14 +531,18 @@ export async function createOutboundDocument(
         const advancing = snapshots.filter((s) => !(s.draw.isPartial && !s.draw.emptied));
 
         // A settling line only moves the item if it is not still out on some
-        // other document — one lookup for all of them, not one each.
+        // other document — one lookup for all of them, not one each. This
+        // document's own lines are excluded: a MEMO_OUT writes ON_MEMO lines,
+        // so the line just created would otherwise read as somebody else's
+        // claim and hold the item back from its own document.
         const settling = advancing.filter((s) => s.settlesMemoLineId);
         const heldBack = new Set<string>();
         if (settling.length > 0) {
           const stillOut = await tx.documentLineItem.findMany({
             where: {
               inventoryItemId: { in: settling.map((s) => s.itemId) },
-              lineStatus: "ON_MEMO"
+              lineStatus: "ON_MEMO",
+              documentId: { not: doc.id }
             },
             select: { id: true, inventoryItemId: true }
           });
@@ -510,18 +568,56 @@ export async function createOutboundDocument(
                 data: { status: newItemStatus, visibleOnPortal: false }
               })
           );
+          // A transfer moves ON_MEMO to ON_MEMO, so the status column alone
+          // would say nothing happened. The note is the only thing on the
+          // item's history that records the hand-off.
           await createManyChunked(
             moving.map((s) => ({
               inventoryItemId: s.itemId,
               previousStatus: s.currentStatus,
               newStatus: newItemStatus,
               documentId: doc.id,
-              changedById: createdById
+              changedById: createdById,
+              note:
+                transferring && s.currentStatus === "ON_MEMO"
+                  ? `Moved from an open memo onto ${documentNumber}`
+                  : null
             })),
             (b) => tx.itemStatusHistory.createMany({ data: b })
           );
         }
         mark("statuses advanced");
+
+        // Skipping the Return Memo Out is the point of the transfer, so the new
+        // memo has to do the return's work: the old line is resolved here, or
+        // both memos would go on claiming the same piece.
+        if (transferring) {
+          const movedFromMemo = snapshots.filter((s) => s.currentStatus === "ON_MEMO");
+          if (movedFromMemo.length > 0) {
+            const priorLines = await tx.documentLineItem.findMany({
+              where: {
+                inventoryItemId: { in: movedFromMemo.map((s) => s.itemId) },
+                lineStatus: "ON_MEMO",
+                documentId: { not: doc.id },
+                document: { type: "MEMO_OUT" }
+              },
+              select: { id: true, documentId: true }
+            });
+            const affectedMemoIds = new Set(priorLines.map((l) => l.documentId));
+            await idsChunked(
+              priorLines.map((l) => l.id),
+              (batch) =>
+                tx.documentLineItem.updateMany({
+                  where: { id: { in: batch } },
+                  data: { lineStatus: "RETURNED", resolvedByDocumentId: doc.id }
+                })
+            );
+            for (const memoId of affectedMemoIds) {
+              await recomputeMemoClose(tx, memoId);
+            }
+            mark("prior memo lines released");
+          }
+        }
 
         if (type === "INVOICE") {
           const affectedMemoIds = new Set<string>();
