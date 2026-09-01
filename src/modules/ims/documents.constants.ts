@@ -56,8 +56,15 @@ export const NEW_LINE_STATUS: Record<OutboundCreateType, LineStatus> = {
   BRAND_INVENTORY_OUT: "RETURNED"
 };
 
+/**
+ * MEMO_OUT accepts ON_MEMO because a piece already out with one client can be
+ * moved straight onto a new memo for another — a store lending a stone on to a
+ * stylist. The new memo resolves the old line, so this replaces a Return Memo
+ * Out followed by a fresh Memo Out rather than leaving two memos claiming the
+ * same item. See the transfer step in `createOutboundDocument`.
+ */
 export const ALLOWED_SOURCE_STATUS: Record<OutboundCreateType, ItemStatus[]> = {
-  MEMO_OUT: ["IN_STOCK", "RESERVED"],
+  MEMO_OUT: ["IN_STOCK", "RESERVED", "ON_MEMO"],
   INVOICE: ["IN_STOCK", "RESERVED", "ON_MEMO"],
   BRAND_INVENTORY_OUT: ["IN_STOCK"]
 };

@@ -2,7 +2,7 @@
   "name": "radiia-backend",
   "version": "0.1.0",
   "private": true,
-  "description": "RADIIA standalone backend \u2014 Express API + Prisma. Serves the client portal, admin portal, and future portals. Fully independent of any frontend repo.",
+  "description": "RADIIA standalone backend — Express API + Prisma. Serves the client portal, admin portal, and future portals. Fully independent of any frontend repo.",
   "scripts": {
     "dev": "dotenv -e .env.dev -- tsx watch src/index.ts",
     "dev:prod": "dotenv -e .env.local -- tsx watch src/index.ts",
@@ -42,7 +42,8 @@
     "mirror:prices:prod": "dotenv -e .env.local -- tsx scripts/mirror-prices.ts",
     "smoke:sku": "dotenv -e .env.dev -- tsx scripts/sku-copy-smoke.ts",
     "sku:vendor:dev": "dotenv -e .env.dev -- tsx scripts/sku-from-vendor.ts",
-    "sku:vendor:prod": "dotenv -e .env.local -- tsx scripts/sku-from-vendor.ts"
+    "sku:vendor:prod": "dotenv -e .env.local -- tsx scripts/sku-from-vendor.ts",
+    "smoke:memotransfer": "dotenv -e .env.dev -- tsx scripts/memo-transfer-smoke.ts"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",
