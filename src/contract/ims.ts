@@ -428,12 +428,17 @@ export const ImsDocumentLineDrawSchema = z.object({
 });
 export type ImsDocumentLineDraw = z.infer<typeof ImsDocumentLineDrawSchema>;
 
-export const ImsIssueDateSchema = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, "Issue date must be a calendar date (YYYY-MM-DD)")
-  .refine((s) => new Date(`${s}T12:00:00.000Z`).toISOString().slice(0, 10) === s, {
-    message: "Issue date is not a real calendar date"
-  });
+/** A plain calendar day — no clock, no zone. Midday UTC is the round-trip probe
+ *  so a date can never drift across a day boundary while being checked. */
+const calendarDate = (label: string) =>
+  z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, `${label} must be a calendar date (YYYY-MM-DD)`)
+    .refine((s) => new Date(`${s}T12:00:00.000Z`).toISOString().slice(0, 10) === s, {
+      message: `${label} is not a real calendar date`
+    });
+
+export const ImsIssueDateSchema = calendarDate("Issue date");
 
 export const ImsCreateDocumentSchema = z
   .object({
@@ -774,3 +779,254 @@ export type ClientLifecycleAction = z.infer<typeof ClientLifecycleActionSchema>;
 
 export const ImsClientLifecycleSchema = z.object({ action: ClientLifecycleActionSchema });
 export type ImsClientLifecycle = z.infer<typeof ImsClientLifecycleSchema>;
+
+/* -------------------------------------------------------------------------- */
+/* Reports (F7 · KAN-13)                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Seven read-only views over records that already exist. Every report is a
+ * projection of `InventoryItem`, `Document` (+ its lines) or `ItemStatusHistory`
+ * — nothing here writes, and no report needs a table or a column of its own.
+ */
+export const IMS_REPORT_KEYS = [
+  "inventory",
+  "memo_out",
+  "memo_in",
+  "po",
+  "invoices",
+  "bills",
+  "history"
+] as const;
+export const ImsReportKeySchema = z.enum(IMS_REPORT_KEYS);
+export type ImsReportKey = z.infer<typeof ImsReportKeySchema>;
+
+/** Which document type each document-shaped report reads. */
+export const IMS_REPORT_DOCUMENT_TYPE = {
+  memo_out: "MEMO_OUT",
+  memo_in: "MEMO_IN",
+  po: "PURCHASE_ORDER",
+  invoices: "INVOICE",
+  bills: "BILL_IN"
+} as const satisfies Record<string, DocumentType>;
+export type ImsDocumentReportKey = keyof typeof IMS_REPORT_DOCUMENT_TYPE;
+
+export const IMS_REPORT_ROW_LIMIT_DEFAULT = 1000;
+export const IMS_REPORT_ROW_LIMIT_MAX = 5000;
+
+/**
+ * One query shape for all seven; each report uses the fields that mean something
+ * to it and ignores the rest. Not every filter applies everywhere — `itemStatus`
+ * is meaningless on an invoice report, `documentStatus` on an inventory one —
+ * so a filter a report cannot honour is simply not applied rather than an error.
+ *
+ * Defaults are the report's own question: **current** inventory excludes SOLD and
+ * RETURNED, and a document report excludes VOID (a voided document is not
+ * business activity). Ask for either explicitly by status and it comes back.
+ */
+export const ImsReportQuerySchema = z.object({
+  /** Inclusive window: issue date (documents), entered-stock date (inventory),
+   *  changed-at (history). */
+  from: calendarDate("From date").optional(),
+  to: calendarDate("To date").optional(),
+  /** Free text — SKU / item name (inventory, history), document number /
+   *  external reference / party name (documents). */
+  q: z.string().trim().min(1).optional(),
+  vendorId: z.string().min(1).optional(),
+  clientId: z.string().min(1).optional(),
+  /** Narrows history to a single item's lifecycle. */
+  itemId: z.string().min(1).optional(),
+  documentStatus: DocumentStatusSchema.optional(),
+  itemStatus: ItemStatusSchema.optional(),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(IMS_REPORT_ROW_LIMIT_MAX)
+    .optional()
+    .default(IMS_REPORT_ROW_LIMIT_DEFAULT)
+});
+export type ImsReportQuery = z.infer<typeof ImsReportQuerySchema>;
+
+/**
+ * What every report hands back. `totals` is computed over the rows returned, so
+ * when `truncated` is true it describes the page, not the whole table — the flag
+ * exists so a caller never reads a capped total as a complete one.
+ */
+export interface ImsReportEnvelope<K extends ImsReportKey, Totals, Row> {
+  key: K;
+  /** ISO instant the report was run — also the "today" every age and overdue
+   *  count in it was measured against. */
+  generatedAt: string;
+  rowCount: number;
+  truncated: boolean;
+  rowLimit: number;
+  totals: Totals;
+  rows: Row[];
+}
+
+export interface ImsInventoryReportRow {
+  id: string;
+  sku: string;
+  vendorSku: string | null;
+  itemName: string | null;
+  itemType: ItemType;
+  itemSubtype: ItemSubtype | null;
+  status: ItemStatus;
+  vendorName: string | null;
+  brandOwnerName: string | null;
+  reservedForClientName: string | null;
+  /** One-line summary of the piece as it would be quoted. */
+  description: string;
+  gemType: string | null;
+  shape: string | null;
+  /** Hue + intensity when the stone is fancy, the white grade otherwise. */
+  color: string | null;
+  clarity: string | null;
+  lab: string | null;
+  certNumber: string | null;
+  /** What arrived vs what is still on the shelf. They differ only on a lot that
+   *  has been part-drawn (parcel carats, jewelry pieces). */
+  originalCt: number | null;
+  remainingCt: number | null;
+  originalQty: number | null;
+  remainingQty: number | null;
+  /** Valued on the REMAINING balance — a half-sold parcel is worth half. */
+  costValue: number | null;
+  wholesaleValue: number | null;
+  retailValue: number | null;
+  visibleOnPortal: boolean;
+  enteredStockAt: string;
+}
+
+export interface ImsInventoryReportTotals {
+  itemCount: number;
+  byStatus: Record<ItemStatus, number>;
+  byType: Record<ItemType, number>;
+  remainingCarats: number;
+  costValue: number;
+  wholesaleValue: number;
+  retailValue: number;
+  /** Rows that carried a wholesale figure. The gap against `itemCount` is how
+   *  much of the stock is unpriced, which a bare sum would hide. */
+  valuedItemCount: number;
+}
+
+export type ImsInventoryReport = ImsReportEnvelope<
+  "inventory",
+  ImsInventoryReportTotals,
+  ImsInventoryReportRow
+>;
+
+/**
+ * One row shape for all five document reports. It deliberately carries only the
+ * counterparty's name — no client and no wholesale price — which is what keeps
+ * the PO report safe to hand a vendor.
+ */
+export interface ImsDocumentReportRow {
+  id: string;
+  type: DocumentType;
+  documentNumber: string | null;
+  externalReference: string | null;
+  status: DocumentStatus;
+  direction: DocDirection;
+  partyKind: PartyKind | null;
+  partyId: string | null;
+  partyName: string | null;
+  issueDate: string;
+  dueDate: string | null;
+  /** Calendar days since issue. */
+  daysOutstanding: number;
+  /** Past its due date and still OPEN. */
+  overdue: boolean;
+  daysOverdue: number | null;
+  lineCount: number;
+  /** Lines still out — memo reports only, null where a document type has no
+   *  line-level notion of open (an invoice's openness is the document's status). */
+  openLineCount: number | null;
+  openValue: number | null;
+  total: number | null;
+  emailedAt: string | null;
+  quickbooksSyncedAt: string | null;
+}
+
+export interface ImsDocumentReportTotals {
+  documentCount: number;
+  openCount: number;
+  overdueCount: number;
+  lineCount: number;
+  openLineCount: number | null;
+  totalValue: number;
+  openValue: number | null;
+  /** Never pushed to QuickBooks — the work list for an accounting export. */
+  unsyncedCount: number;
+}
+
+export type ImsMemoOutReport = ImsReportEnvelope<
+  "memo_out",
+  ImsDocumentReportTotals,
+  ImsDocumentReportRow
+>;
+export type ImsMemoInReport = ImsReportEnvelope<
+  "memo_in",
+  ImsDocumentReportTotals,
+  ImsDocumentReportRow
+>;
+export type ImsPurchaseOrderReport = ImsReportEnvelope<
+  "po",
+  ImsDocumentReportTotals,
+  ImsDocumentReportRow
+>;
+export type ImsInvoiceReport = ImsReportEnvelope<
+  "invoices",
+  ImsDocumentReportTotals,
+  ImsDocumentReportRow
+>;
+export type ImsBillReport = ImsReportEnvelope<
+  "bills",
+  ImsDocumentReportTotals,
+  ImsDocumentReportRow
+>;
+
+export interface ImsItemHistoryReportRow {
+  id: string;
+  changedAt: string;
+  inventoryItemId: string;
+  sku: string;
+  itemName: string | null;
+  itemType: ItemType;
+  /** Where the item stands today, so a row read on its own still makes sense. */
+  currentStatus: ItemStatus;
+  previousStatus: ItemStatus | null;
+  newStatus: ItemStatus;
+  documentId: string | null;
+  documentNumber: string | null;
+  documentType: DocumentType | null;
+  /** The counterparty on that document — who the piece went to or came from. */
+  partyName: string | null;
+  changedById: string;
+  changedByName: string | null;
+  note: string | null;
+}
+
+export interface ImsItemHistoryReportTotals {
+  eventCount: number;
+  /** Distinct items appearing in the rows. */
+  itemCount: number;
+  byStatus: Record<ItemStatus, number>;
+}
+
+export type ImsItemHistoryReport = ImsReportEnvelope<
+  "history",
+  ImsItemHistoryReportTotals,
+  ImsItemHistoryReportRow
+>;
+
+export type ImsReport =
+  | ImsInventoryReport
+  | ImsMemoOutReport
+  | ImsMemoInReport
+  | ImsPurchaseOrderReport
+  | ImsInvoiceReport
+  | ImsBillReport
+  | ImsItemHistoryReport;
